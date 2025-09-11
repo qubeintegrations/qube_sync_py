@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: qubesync
+Version: 0.1.0
+Summary: A simple Python wrapper for the QuBe Sync API.
+Description-Content-Type: text/markdown
+Requires-Dist: requests

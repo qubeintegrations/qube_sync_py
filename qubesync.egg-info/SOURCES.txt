@@ -1,0 +1,9 @@
+pyproject.toml
+qube_sync/__init__.py
+qube_sync/qube_sync.py
+qubesync.egg-info/PKG-INFO
+qubesync.egg-info/SOURCES.txt
+qubesync.egg-info/dependency_links.txt
+qubesync.egg-info/requires.txt
+qubesync.egg-info/top_level.txt
+tests/test_qube_sync.py

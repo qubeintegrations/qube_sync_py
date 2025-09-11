@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qubesync"
+version = "0.1.0"
+dependencies = ["requests"]
+description = "A simple Python wrapper for the QuBe Sync API."
+readme = "README.md"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
