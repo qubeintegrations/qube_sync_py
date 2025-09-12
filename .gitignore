@@ -1,0 +1,8 @@
+pyvenv.cfg
+**/__pycache__/
+bin/
+lib/
+dist/
+src/qubesync.egg-info/
+.env
+.venv
