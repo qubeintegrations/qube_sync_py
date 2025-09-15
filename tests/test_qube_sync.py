@@ -72,18 +72,18 @@ class TestQubeSync:
         os.environ["QUBE_WEBHOOK_SECRET"] = "supersecret"
     
     @patch('requests.Session')
-    def test_connection(self, mock_session):
-        """Test connection creates a session with proper auth"""
+    def test_conn(self, mock_session):
+        """Test conn creates a session with proper auth"""
         mock_session_instance = MagicMock()
         mock_session.return_value = mock_session_instance
         
-        result = QubeSync.connection()
+        result = QubeSync.conn()
         
         mock_session.assert_called_once()
         assert mock_session_instance.auth == ("test_api_key", "")
         assert result == mock_session_instance
     
-    @patch.object(QubeSync, 'connection')
+    @patch.object(QubeSync, 'conn')
     def test_get_success(self, mock_connection):
         """Test GET request success"""
         mock_session = MagicMock()
@@ -101,7 +101,7 @@ class TestQubeSync:
         )
         assert result == {"data": "test"}
     
-    @patch.object(QubeSync, 'connection')
+    @patch.object(QubeSync, 'conn')
     def test_get_error(self, mock_connection):
         """Test GET request error handling"""
         mock_session = MagicMock()
@@ -114,7 +114,7 @@ class TestQubeSync:
         with pytest.raises(QubeSyncError, match="Unexpected response: 400"):
             QubeSync.get("test/endpoint")
     
-    @patch.object(QubeSync, 'connection')
+    @patch.object(QubeSync, 'conn')
     def test_post_success(self, mock_connection):
         """Test POST request success"""
         mock_session = MagicMock()
@@ -134,7 +134,7 @@ class TestQubeSync:
         )
         assert result == {"data": "created"}
     
-    @patch.object(QubeSync, 'connection')
+    @patch.object(QubeSync, 'conn')
     def test_delete_success(self, mock_connection):
         """Test DELETE request success"""
         mock_session = MagicMock()
@@ -380,6 +380,289 @@ class TestQubeSync:
         # Should fail with max_age=50
         with pytest.raises(StaleWebhookError):
             QubeSync.verify_and_build_webhook(payload, header, max_age=50)
+
+    @patch.object(QubeSync, 'get')
+    def test_prebuilt_query_basic(self, mock_get):
+        """Test prebuilt_query with basic parameters"""
+        mock_get.return_value = {
+            "data": {
+                "id": "550e8400-e29b-41d4-a716-446655440000",
+                "state": "waiting",
+                "webhook_state": "not_applicable",
+                "connection_id": "conn123"
+            }
+        }
+        
+        result = QubeSync.prebuilt_query("conn123", "customers", max_returned=10, active="InactiveOnly")
+        
+        mock_get.assert_called_once_with("connections/conn123/customers?max_returned=10&active=InactiveOnly")
+        assert result["id"] == "550e8400-e29b-41d4-a716-446655440000"
+        assert result["state"] == "waiting"
+
+    @patch.object(QubeSync, 'get')
+    def test_prebuilt_query_with_iterate(self, mock_get):
+        """Test prebuilt_query with iterate=True"""
+        mock_get.return_value = {
+            "data": {
+                "id": "550e8400-e29b-41d4-a716-446655440001",
+                "state": "waiting",
+                "webhook_state": "not_applicable",
+                "connection_id": "conn123"
+            }
+        }
+        
+        result = QubeSync.prebuilt_query("conn123", "invoices", iterate=True, max_returned=50)
+        
+        mock_get.assert_called_once_with("connections/conn123/invoices?max_returned=50&iterate=true")
+        assert result["id"] == "550e8400-e29b-41d4-a716-446655440001"
+
+    @patch.object(QubeSync, 'get')
+    def test_prebuilt_query_no_params(self, mock_get):
+        """Test prebuilt_query with no additional parameters"""
+        mock_get.return_value = {
+            "data": {
+                "id": "550e8400-e29b-41d4-a716-446655440002",
+                "state": "waiting",
+                "webhook_state": "not_applicable",
+                "connection_id": "conn123"
+            }
+        }
+        
+        result = QubeSync.prebuilt_query("conn123", "vendors")
+        
+        mock_get.assert_called_once_with("connections/conn123/vendors?")
+        assert result["id"] == "550e8400-e29b-41d4-a716-446655440002"
+
+    @patch.object(QubeSync, 'prebuilt_query')
+    def test_customer_query(self, mock_prebuilt_query):
+        """Test customer_query method returns queued request object"""
+        mock_prebuilt_query.return_value = {
+            "id": "550e8400-e29b-41d4-a716-446655440003",
+            "state": "waiting",
+            "webhook_state": "not_applicable",
+            "request_json": {
+                "version": "16.0",
+                "request": {
+                    "name": "CustomerQueryRq",
+                    "attributes": {"requestID": "customer_query"}
+                }
+            },
+            "connection_id": "conn123"
+        }
+        
+        result = QubeSync.customer_query("conn123", max_returned=10, active="InactiveOnly")
+        
+        mock_prebuilt_query.assert_called_once_with("conn123", "customers", max_returned=10, active="InactiveOnly")
+        assert result["id"] == "550e8400-e29b-41d4-a716-446655440003"
+        assert result["state"] == "waiting"
+        assert result["request_json"]["request"]["name"] == "CustomerQueryRq"
+
+    @patch.object(QubeSync, 'prebuilt_query')
+    def test_customer_query_with_iterate(self, mock_prebuilt_query):
+        """Test customer_query with iterate parameter"""
+        mock_prebuilt_query.return_value = {
+            "id": "550e8400-e29b-41d4-a716-446655440004",
+            "state": "waiting",
+            "webhook_state": "not_applicable",
+            "connection_id": "conn123"
+        }
+        
+        result = QubeSync.customer_query("conn123", iterate=True, max_returned=100)
+        
+        mock_prebuilt_query.assert_called_once_with("conn123", "customers", iterate=True, max_returned=100)
+        assert result["id"] == "550e8400-e29b-41d4-a716-446655440004"
+
+    @patch.object(QubeSync, 'prebuilt_query')
+    def test_invoice_query(self, mock_prebuilt_query):
+        """Test invoice_query method returns queued request object"""
+        mock_prebuilt_query.return_value = {
+            "id": "550e8400-e29b-41d4-a716-446655440005",
+            "state": "waiting",
+            "webhook_state": "not_applicable",
+            "request_json": {
+                "version": "16.0",
+                "request": {
+                    "name": "InvoiceQueryRq",
+                    "attributes": {"requestID": "invoice_query"}
+                }
+            },
+            "connection_id": "conn123"
+        }
+        
+        result = QubeSync.invoice_query("conn123", max_returned=25, from_modified_date="2024-01-01")
+        
+        mock_prebuilt_query.assert_called_once_with("conn123", "invoices", max_returned=25, from_modified_date="2024-01-01")
+        assert result["id"] == "550e8400-e29b-41d4-a716-446655440005"
+        assert result["request_json"]["request"]["name"] == "InvoiceQueryRq"
+
+    @patch.object(QubeSync, 'prebuilt_query')
+    def test_invoice_query_with_iterate(self, mock_prebuilt_query):
+        """Test invoice_query with iterate parameter"""
+        mock_prebuilt_query.return_value = {
+            "id": "550e8400-e29b-41d4-a716-446655440006",
+            "state": "waiting",
+            "webhook_state": "not_applicable",
+            "connection_id": "conn123"
+        }
+        
+        result = QubeSync.invoice_query("conn123", iterate=True, to_date="2024-12-31")
+        
+        mock_prebuilt_query.assert_called_once_with("conn123", "invoices", iterate=True, to_date="2024-12-31")
+        assert result["id"] == "550e8400-e29b-41d4-a716-446655440006"
+
+    @patch.object(QubeSync, 'prebuilt_query')
+    def test_vendor_query(self, mock_prebuilt_query):
+        """Test vendor_query method returns queued request object"""
+        mock_prebuilt_query.return_value = {
+            "id": "550e8400-e29b-41d4-a716-446655440007",
+            "state": "waiting",
+            "webhook_state": "not_applicable",
+            "request_json": {
+                "version": "16.0",
+                "request": {
+                    "name": "VendorQueryRq",
+                    "attributes": {"requestID": "vendor_query"}
+                }
+            },
+            "connection_id": "conn123"
+        }
+        
+        result = QubeSync.vendor_query("conn123", max_returned=50, active_status="All")
+        
+        mock_prebuilt_query.assert_called_once_with("conn123", "vendors", max_returned=50, active_status="All")
+        assert result["id"] == "550e8400-e29b-41d4-a716-446655440007"
+        assert result["request_json"]["request"]["name"] == "VendorQueryRq"
+
+    @patch.object(QubeSync, 'prebuilt_query')
+    def test_vendor_query_with_iterate(self, mock_prebuilt_query):
+        """Test vendor_query with iterate parameter"""
+        mock_prebuilt_query.return_value = {
+            "id": "550e8400-e29b-41d4-a716-446655440008",
+            "state": "waiting",
+            "webhook_state": "not_applicable",
+            "connection_id": "conn123"
+        }
+        
+        result = QubeSync.vendor_query("conn123", iterate=True, name="DEF")
+        
+        mock_prebuilt_query.assert_called_once_with("conn123", "vendors", iterate=True, name="DEF")
+        assert result["id"] == "550e8400-e29b-41d4-a716-446655440008"
+
+    @patch.object(QubeSync, 'prebuilt_query')
+    def test_sales_order_query(self, mock_prebuilt_query):
+        """Test sales_order_query method returns queued request object"""
+        mock_prebuilt_query.return_value = {
+            "id": "550e8400-e29b-41d4-a716-446655440009",
+            "state": "waiting",
+            "webhook_state": "not_applicable",
+            "request_json": {
+                "version": "16.0",
+                "request": {
+                    "name": "SalesOrderQueryRq",
+                    "attributes": {"requestID": "sales_order_query"}
+                }
+            },
+            "connection_id": "conn123"
+        }
+        
+        result = QubeSync.sales_order_query("conn123", max_returned=20, status="Open")
+        
+        mock_prebuilt_query.assert_called_once_with("conn123", "sales_orders", max_returned=20, status="Open")
+        assert result["id"] == "550e8400-e29b-41d4-a716-446655440009"
+        assert result["request_json"]["request"]["name"] == "SalesOrderQueryRq"
+
+    @patch.object(QubeSync, 'prebuilt_query')
+    def test_sales_order_query_with_iterate(self, mock_prebuilt_query):
+        """Test sales_order_query with iterate parameter"""
+        mock_prebuilt_query.return_value = {
+            "id": "550e8400-e29b-41d4-a716-446655440010",
+            "state": "waiting",
+            "webhook_state": "not_applicable",
+            "connection_id": "conn123"
+        }
+        
+        result = QubeSync.sales_order_query("conn123", iterate=True, customer_id="cust123")
+        
+        mock_prebuilt_query.assert_called_once_with("conn123", "sales_orders", iterate=True, customer_id="cust123")
+        assert result["id"] == "550e8400-e29b-41d4-a716-446655440010"
+
+    @patch.object(QubeSync, 'prebuilt_query')
+    def test_query_methods_empty_response(self, mock_prebuilt_query):
+        """Test all query methods handle empty responses"""
+        mock_prebuilt_query.return_value = None
+        
+        # Test all query methods return None for empty responses
+        assert QubeSync.customer_query("conn123") is None
+        assert QubeSync.invoice_query("conn123") is None
+        assert QubeSync.vendor_query("conn123") is None
+        assert QubeSync.sales_order_query("conn123") is None
+
+    @patch.object(QubeSync, 'get')
+    def test_prebuilt_query_url_encoding(self, mock_get):
+        """Test prebuilt_query properly encodes URL parameters"""
+        mock_get.return_value = {
+            "data": {
+                "id": "550e8400-e29b-41d4-a716-446655440011",
+                "state": "waiting",
+                "connection_id": "conn123"
+            }
+        }
+        
+        result = QubeSync.prebuilt_query("conn123", "customers", 
+                                       name="John & Jane", 
+                                       include=["ListID", "FullName"])
+
+        expected_url = "connections/conn123/customers?name=John & Jane&include[]=ListID&include[]=FullName"
+        mock_get.assert_called_once_with(expected_url)
+        assert result["id"] == "550e8400-e29b-41d4-a716-446655440011"
+
+    @patch.object(QubeSync, 'prebuilt_query')
+    def test_query_methods_return_request_object_structure(self, mock_prebuilt_query):
+        """Test that query methods return proper request object structure"""
+        mock_request_object = {
+            "id": "550e8400-e29b-41d4-a716-446655440012",
+            "state": "waiting",
+            "webhook_state": "not_applicable",
+            "request_xml": "<QBXML><QBXMLMsgsRq onError='stopOnError'><CustomerQueryRq requestID='1'><MaxReturned>100</MaxReturned></CustomerQueryRq></QBXMLMsgsRq></QBXML>",
+            "request_json": {
+                "version": "16.0",
+                "request": {
+                    "name": "CustomerQueryRq",
+                    "attributes": {"requestID": "1"},
+                    "children": [{"name": "MaxReturned", "text": "100"}]
+                }
+            },
+            "response_xml": None,
+            "response_json": None,
+            "webhook_url": "https://example.com/webhook",
+            "webhook_attempts": [],
+            "webhook_error": None,
+            "error": None,
+            "links": {
+                "self": "/api/v1/connections/123e4567-e89b-12d3-a456-426614174000/queued_requests/550e8400-e29b-41d4-a716-446655440012",
+                "ui": "/app/queued_requests/550e8400-e29b-41d4-a716-446655440012",
+                "connection_ui": "/app/connections/123e4567-e89b-12d3-a456-426614174000"
+            },
+            "inserted_at": "2023-01-01T12:00:00Z",
+            "updated_at": "2023-01-01T12:00:01Z",
+            "connection_id": "conn123"
+        }
+        
+        mock_prebuilt_query.return_value = mock_request_object
+        
+        result = QubeSync.customer_query("conn123", max_returned=100)
+        
+        # Verify the structure matches the expected request object format
+        assert result["id"] == "550e8400-e29b-41d4-a716-446655440012"
+        assert result["state"] == "waiting"
+        assert result["webhook_state"] == "not_applicable"
+        assert "request_xml" in result
+        assert "request_json" in result
+        assert "response_xml" in result  # Initially None
+        assert "response_json" in result  # Initially None
+        assert "webhook_url" in result
+        assert "links" in result
+        assert result["connection_id"] == "conn123"
 
 if __name__ == "__main__":
     pytest.main([__file__])

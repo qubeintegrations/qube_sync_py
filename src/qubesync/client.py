@@ -34,25 +34,25 @@ class QubeSync:
         except KeyError:
             raise ConfigError("QUBE_WEBHOOK_SECRET not set in environment.")
 
-    def connection():
+    def conn():
         session = requests.Session()
         session.auth = (QubeSync.api_key(), "")
         return session
 
     def get(url, headers={}):
-        resp = QubeSync.connection().get(f"{QubeSync.base_url()}/{url}", headers={**QubeSync.default_headers(), **headers})
+        resp = QubeSync.conn().get(f"{QubeSync.base_url()}/{url}", headers={**QubeSync.default_headers(), **headers})
         if resp.status_code >= 200 and resp.status_code < 300:
             return resp.json()
         raise QubeSyncError(f"Unexpected response: {resp.status_code}\n{resp.text}")
 
     def post(url, body=None, headers={}):
-        resp = QubeSync.connection().post(f"{QubeSync.base_url()}/{url}", headers={**QubeSync.default_headers(), **headers}, json=body)
+        resp = QubeSync.conn().post(f"{QubeSync.base_url()}/{url}", headers={**QubeSync.default_headers(), **headers}, json=body)
         if resp.status_code >= 200 and resp.status_code < 300:
             return resp.json()
         raise QubeSyncError(f"Unexpected response: {resp.status_code}\n{resp.text}")
 
     def delete(url, headers={}):
-        resp = QubeSync.connection().delete(f"{QubeSync.base_url()}/{url}", headers={**QubeSync.default_headers(), **headers})
+        resp = QubeSync.conn().delete(f"{QubeSync.base_url()}/{url}", headers={**QubeSync.default_headers(), **headers})
         if resp.status_code >= 200 and resp.status_code < 300:
             return True
         raise QubeSyncError(f"Unexpected response: {resp.status_code}\n{resp.text}")
@@ -132,3 +132,33 @@ class QubeSync:
             return json.loads(body)
         
         raise InvalidWebhookSignatureError("Webhook signature mismatch")
+
+    def prebuilt_query(connection_id, query_type, iterate=False, **params):
+        if iterate:
+            params["iterate"] = "true"
+
+        # Handle array parameters - transform lists to multiple params with [] notation
+        query_parts = []
+        for k, v in params.items():
+            if isinstance(v, list):
+                # For arrays, add each item with []= notation
+                for item in v:
+                    query_parts.append(f"{k}[]={item}")
+            else:
+                query_parts.append(f"{k}={v}")
+        
+        path = f"connections/{connection_id}/{query_type}?" + "&".join(query_parts)
+        return QubeSync.get(path).get("data")
+
+    def customer_query(connection_id, **params):
+        return QubeSync.prebuilt_query(connection_id, "customers", **params)
+
+    def invoice_query(connection_id, **params):
+        return QubeSync.prebuilt_query(connection_id, "invoices", **params)
+
+    def vendor_query(connection_id, **params):
+        return QubeSync.prebuilt_query(connection_id, "vendors", **params)
+
+    def sales_order_query(connection_id, **params):
+        return QubeSync.prebuilt_query(connection_id, "sales_orders", **params)
+    
