@@ -5,7 +5,8 @@ import hmac
 import hashlib
 import time
 
-class QubeSyncError(Exception): pass
+from .errors import QubeSyncError
+
 class StaleWebhookError(QubeSyncError): pass
 class InvalidWebhookSignatureError(QubeSyncError): pass
 class ConfigError(QubeSyncError): pass
