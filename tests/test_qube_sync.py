@@ -354,7 +354,7 @@ class TestQubeSync:
         signed_payload = QubeSync.sign_payload(f"{timestamp}.{payload}")
         header = f"t={timestamp},v1={signed_payload}"
         
-        with pytest.raises(StaleWebhookError, match="Timestamp more than 500 seconds old"):
+        with pytest.raises(StaleWebhookError, match="600 seconds old"):
             QubeSync.verify_and_build_webhook(payload, header)
     
     def test_verify_and_build_webhook_invalid_signature(self):

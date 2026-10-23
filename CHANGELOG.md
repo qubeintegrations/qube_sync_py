@@ -5,6 +5,23 @@ All notable changes to the QubeSync Python library will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-10-22
+
+Security fixes for webhook verification. Upgrading needs no code change.
+
+### Fixed
+- `verify_and_build_webhook` no longer prints the timestamp and signatures of every webhook.
+- The timestamp must be within 300 seconds of now, either way. It was 500 seconds old, and any
+  timestamp in the future passed. `max_age` (seconds) still sets the window.
+- A malformed header (a part without `=`, a non-numeric `t`, a blank `v1`) raises
+  `InvalidWebhookSignatureError` instead of `ValueError`, and a non-ASCII signature no longer
+  raises `TypeError`.
+
+### Changed
+- `verify_and_build_webhook` and `sign_payload` take the raw body as `bytes` or `str`.
+- `requires-python = ">=3.8"`.
+- Tests run against a delivery signed by the QuBe Sync server (`tests/fixtures/webhook_vectors.json`).
+
 ## [0.1.0] - 2025-09-12
 
 ### Added

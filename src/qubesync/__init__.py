@@ -35,7 +35,7 @@ from .request_builder import (
 )
 
 # Version info
-__version__ = "0.1.0"
+__version__ = "0.1.2"
 
 # Public API
 __all__ = [

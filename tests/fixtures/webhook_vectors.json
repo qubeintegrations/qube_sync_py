@@ -1,0 +1,11 @@
+{
+  "_comment": "Signed by Qube.WebhookSender.signature_header/3 on the QuBe Sync server (2026-10-22). The secrets are made-up test values.",
+  "timestamp": 1761000000,
+  "body": "{\"id\":\"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\",\"timestamp\":1761000000,\"state\":\"processed\",\"response_json\":{\"note\":\"naïve café — ünïcode\"}}",
+  "secrets": [
+    "whsec_test_vector_one",
+    "whsec_test_vector_two"
+  ],
+  "header_one_secret": "t=1761000000,v1=30f9af1cc747ccb5b80f1b09b5cf48fdad2ff57517bee3155bc6c28c737580be",
+  "header_two_secrets": "t=1761000000,v1=30f9af1cc747ccb5b80f1b09b5cf48fdad2ff57517bee3155bc6c28c737580be,v1=b87813ad2873389935a389439247cfd280654fb70fb601faccc15defca2cccdf"
+}

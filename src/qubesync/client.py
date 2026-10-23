@@ -98,39 +98,54 @@ class QubeSync:
 
     def extract_signature_meta(header, expected_schemes=["v1"]):
         # Example header: t=timestamp,v1=signature1,v1=signature2
-        # note: signatures may include '=' characters
-        parts = header.split(',')
+        # Parts are read by key; there is one v1 per active secret while a secret rotates.
         timestamp = None
         signatures = []
-        for part in parts:
-            k, v = part.split('=', 1)
+        for part in (header or "").split(','):
+            k, sep, v = part.strip().partition('=')
+            if not sep:
+                continue
             if k == 't':
+                if not (v.isascii() and v.isdigit()):
+                    raise InvalidWebhookSignatureError("Invalid signature header format.")
                 timestamp = int(v)
-            elif k in expected_schemes:
+            elif k in expected_schemes and v:
                 signatures.append(v)
         if timestamp is None or not signatures:
             raise InvalidWebhookSignatureError("Invalid signature header format.")
         return timestamp, signatures
 
     def sign_payload(payload):
+        if isinstance(payload, str):
+            payload = payload.encode("utf-8")
         return hmac.new(
-            QubeSync.api_secret().encode("utf-8"), 
-            payload.encode("utf-8"), 
+            QubeSync.api_secret().encode("utf-8"),
+            payload,
             hashlib.sha256
         ).hexdigest()
 
-    def verify_and_build_webhook(body, signature, max_age=500):
+    def verify_and_build_webhook(body, signature, max_age=300):
+        """Verifies a webhook against its X-QUBE-Signature header and returns the parsed body.
+
+        `body` is the raw request body, bytes or str, before anything parses it.
+        The timestamp must be within `max_age` seconds of now, either way.
+        """
         timestamp, signatures = QubeSync.extract_signature_meta(signature, QubeSync.EXPECTED_SIGNATURE_SCHEMES)
 
-        # print for debugging
-        print(f"Timestamp: {timestamp}, Signatures: {signatures}")
-        if timestamp < time.time() - max_age:
-            raise StaleWebhookError(f"Timestamp more than {max_age} seconds old.")
-        
-        signed_payload = QubeSync.sign_payload(str(timestamp) + '.' + body)
-        if any(hmac.compare_digest(signed_payload, sig) for sig in signatures):
+        age = int(time.time()) - timestamp
+        if abs(age) > max_age:
+            when = f"{age} seconds old" if age > 0 else f"{-age} seconds in the future"
+            raise StaleWebhookError(
+                f"Webhook timestamp is {when}; it must be within {max_age} seconds of now. Check this server's clock."
+            )
+
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+        signed_payload = QubeSync.sign_payload(str(timestamp).encode("utf-8") + b"." + body)
+        expected = signed_payload.encode("utf-8")
+        if any(hmac.compare_digest(expected, sig.encode("utf-8")) for sig in signatures):
             return json.loads(body)
-        
+
         raise InvalidWebhookSignatureError("Webhook signature mismatch")
 
     def prebuilt_query(connection_id, query_type, iterate=False, **params):
