@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qubesync"
-version = "0.1.1"
+version = "0.1.2"
+requires-python = ">=3.8"
 dependencies = ["requests"]
 description = "A Python library for QuickBooks Desktop / Enterprise integration via QubeSync API with intuitive DSL for building QBXML requests."
 readme = "README.md"

@@ -46,8 +46,8 @@ print(f"✅ Request queued: {response['id']}")
 ```python
 def webhook_handler(request):
     signature = request.headers.get('X-Qube-Signature')
-    body = request.body.decode('utf-8')
-    
+    body = request.body  # raw bytes, before anything parses them
+
     webhook_data = QubeSync.verify_and_build_webhook(body, signature)
     print(f"Received QuickBooks data: {webhook_data}")
     

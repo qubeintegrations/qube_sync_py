@@ -120,18 +120,23 @@ QubeSync.delete_request(request_id)
 # Verify and parse webhook payload
 def handle_webhook(request):
     signature = request.headers.get('X-Qube-Signature')
-    body = request.body.decode('utf-8')
-    
+    # The raw body, bytes or str, before anything parses it
+    body = request.body
+
     try:
         webhook_data = QubeSync.verify_and_build_webhook(body, signature)
         # Process the verified webhook data in the background
         # to ensure a quick response
-        print(f"Received response for request: {webhook_data['request_id']}")
+        print(f"Received response for request: {webhook_data['id']}")
         return {"status": "success"}
     except (StaleWebhookError, InvalidWebhookSignatureError) as e:
         print(f"Webhook verification failed: {e}")
-        return {"status": "error"}, 400
+        return {"status": "error"}, 401
 ```
+
+The timestamp in `X-Qube-Signature` must be within 300 seconds (5 minutes) of now, either way,
+or `verify_and_build_webhook` raises `StaleWebhookError`. Pass `max_age` (in seconds) for
+another window. A bad, missing or malformed signature raises `InvalidWebhookSignatureError`.
 
 ## RequestBuilder DSL
 
