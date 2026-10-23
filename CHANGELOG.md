@@ -5,6 +5,24 @@ All notable changes to the QubeSync Python library will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-23
+
+### Added
+- `qubesync.webhooks`: `verify(raw_body, header, secrets, tolerance=300, now=None)` checks a
+  delivery's `X-QUBE-Signature` and returns a typed event (`request`, `workflow_run`,
+  `notification`, `connection`, `name_index` or `unknown`) with `dedupe_key`, `revision`,
+  `reference` and `newer_than(rev)` where they apply. `parse(raw_body)` builds the event
+  without verifying. Standard library only, and it never reads the environment.
+- `SignatureError(QubeSyncError)`, whose `reason` is `missing`, `malformed`, `stale` or
+  `mismatch`. Its message never holds the secret, the signatures or the body.
+- Tests drive every case of the server's test vectors (`tests/fixtures/test_vectors.json`).
+
+### Changed
+- `QubeSyncError` lives in `qubesync.errors` (still importable from `qubesync` and
+  `qubesync.client`).
+
+`QubeSync.verify_and_build_webhook` is unchanged and still works.
+
 ## [0.1.2] - 2026-10-22
 
 Security fixes for webhook verification. Upgrading needs no code change.

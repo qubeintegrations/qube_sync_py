@@ -138,6 +138,101 @@ The timestamp in `X-Qube-Signature` must be within 300 seconds (5 minutes) of no
 or `verify_and_build_webhook` raises `StaleWebhookError`. Pass `max_age` (in seconds) for
 another window. A bad, missing or malformed signature raises `InvalidWebhookSignatureError`.
 
+## Webhooks
+
+`qubesync.webhooks` verifies a delivery's `X-QUBE-Signature` header and parses the body into a
+typed event. It uses only the standard library, works with any framework, and never reads the
+environment: pass your webhook secrets in.
+
+```python
+import os
+from qubesync import webhooks
+
+SECRETS = [os.environ["QUBE_WEBHOOK_SECRET"]]  # add the new one here while a secret rotates
+
+def handle(raw_body, signature_header):
+    """raw_body: the request body exactly as received (bytes or str), before any JSON parsing."""
+    try:
+        event = webhooks.verify(raw_body, signature_header, SECRETS)
+    except webhooks.SignatureError as e:
+        log.warning("webhook refused: %s", e)  # e.reason: missing, malformed, stale or mismatch
+        return 401
+
+    if event.dedupe_key and already_handled(event.dedupe_key):
+        return 200  # a redelivery
+
+    if event.type == "request":
+        # One page of a request's answer, in one state.
+        save_page(event.page_request_id, event.page, event.response_json, event.error)
+    elif event.type == "workflow_run":
+        run = find_run(event.reference)
+        if event.newer_than(run.revision):  # older or equal revisions arrived late: skip them
+            run.update(revision=event.revision, state=event.run_state, prompt=event.prompt)
+    elif event.type == "notification":
+        # Data a running workflow sent out. Never skip it by revision; dedupe_key is delivery_id.
+        store_records(event.reference, event.name, event.data)
+    elif event.type == "connection":
+        conn = find_connection(event.connection_id)
+        if event.newer_than(conn.revision):
+            conn.update(revision=event.revision, status=event.event, stall_reason=event.stall_reason)
+    elif event.type == "name_index":
+        refresh_pickers(event.connection_id, event.name_index)
+    # event.type == "unknown": a newer event this version doesn't know. Accept it (2xx).
+
+    if event.dedupe_key:
+        mark_handled(event.dedupe_key)
+    return 200
+```
+
+- `webhooks.verify(raw_body, header, secrets, tolerance=300, now=None)` returns the event or
+  raises `SignatureError`. `secrets` is a list (or one string); any of them may match. The
+  timestamp must be within `tolerance` seconds of `now` (unix seconds or a `datetime`), either way.
+  Passing a parsed dict raises `TypeError`, since the signature covers the exact bytes; an empty
+  `secrets` list raises `ValueError`.
+- `SignatureError.reason` is `"missing"`, `"malformed"`, `"stale"` or `"mismatch"`. Its message
+  is safe to log: it never holds the secret, the signatures or the body.
+- `webhooks.parse(raw_body)` builds the event without verifying, for tests or when you verified
+  elsewhere.
+- Every event has `type`, `event`, `timestamp`, `app_id`, `sandbox`, `dedupe_key`, `revision`,
+  `reference`, the parsed `body` (also `to_dict()` and `get(key)`). Missing keys read as `None`.
+
+| `type` | Event | Accessors | `dedupe_key` |
+| --- | --- | --- | --- |
+| `request` | no `event`, has `page_request_id` | `id`, `page_request_id`, `state`, `page`, `iteration_state`, `response_json`, `error` | `"<page_request_id>:<state>"` |
+| `workflow_run` | `workflow_run.awaiting_input`, `.completed`, `.failed`, `.cancelled` | `run_id`, `reference`, `revision`, `run_state`, `workflow`, `connection_id`, `prompt`, `outcome`, `output`, `error`, `summary`, `cancel_reason`, `links`, `newer_than(rev)` | `None` |
+| `notification` | `workflow_run.notification` | `run_id`, `reference`, `revision`, `delivery_id`, `seq`, `name`, `state`, `from_`, `data` | `delivery_id` |
+| `connection` | `connection.*` | `delivery_id`, `revision`, `connection`, `connection_id`, `stall_reason`, `newer_than(rev)` | `delivery_id` |
+| `name_index` | `name_index.*` | `connection_id`, `name_index` | `None` |
+| `unknown` | anything else | `body`, `get(key)` | `None` |
+
+`newer_than(stored_revision)` is true when nothing is stored yet (`None`) or the event's
+revision is higher.
+
+### Flask
+
+```python
+from flask import Flask, request
+from qubesync import webhooks
+
+app = Flask(__name__)
+
+@app.post("/webhooks/qube")
+def qube_webhook():
+    try:
+        event = webhooks.verify(
+            request.get_data(),  # the raw bytes; not request.json
+            request.headers.get(webhooks.HEADER),
+            SECRETS,
+        )
+    except webhooks.SignatureError:
+        return "", 401
+    handle_event(event)  # route by event.type as above, ideally on a background job
+    return "", 204
+```
+
+`QubeSync.verify_and_build_webhook(body, signature)` (0.1.x, reads `QUBE_WEBHOOK_SECRET`)
+still works and returns a plain dict.
+
 ## RequestBuilder DSL
 
 The RequestBuilder provides an intuitive Python DSL for constructing QBXML requests that get converted to JSON format for the QubeSync API.

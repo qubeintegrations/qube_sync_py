@@ -4,6 +4,7 @@ QubeSync - Python library for QuickBooks integration via QubeSync API
 This package provides:
 - QubeSync: Main API client for interacting with QubeSync service
 - RequestBuilder: DSL for building QuickBooks XML requests
+- webhooks: verify a webhook delivery and parse it into a typed event
 - Exception classes for error handling
 
 Usage:
@@ -34,8 +35,11 @@ from .request_builder import (
     FluentRequestBuilder
 )
 
+from . import webhooks
+from .webhooks import SignatureError
+
 # Version info
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 
 # Public API
 __all__ = [
@@ -47,6 +51,10 @@ __all__ = [
     "RequestElement",
     "FluentRequestBuilder",
     
+    # Webhooks
+    "webhooks",
+    "SignatureError",
+
     # Exceptions
     "QubeSyncError",
     "StaleWebhookError",

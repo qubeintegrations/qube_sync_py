@@ -1,0 +1,32 @@
+name: vectors
+# The vendored test vectors must match the ones qubesync.com serves (mix
+# webhook_vectors.gen in qube), so a change to how the server signs or what it
+# sends fails here. Weekly too, so it's caught without a pull request.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"
+jobs:
+  vectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: tests/fixtures/test_vectors.json matches https://qubesync.com/webhooks/test_vectors.json
+        run: |
+          url=https://qubesync.com/webhooks/test_vectors.json
+          status=$(curl -sS -o served.json -w '%{http_code}' "$url")
+          if [ "$status" = 404 ]; then
+            echo "::warning::$url isn't served yet; skipped"
+            exit 0
+          fi
+          if [ "$status" != 200 ]; then
+            echo "::error::GET $url answered $status"
+            exit 1
+          fi
+          if ! cmp -s served.json tests/fixtures/test_vectors.json; then
+            echo "::error::tests/fixtures/test_vectors.json differs from $url: copy the served file over it and rerun the tests"
+            diff tests/fixtures/test_vectors.json served.json | head -40
+            exit 1
+          fi
