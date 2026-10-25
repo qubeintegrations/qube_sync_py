@@ -5,6 +5,7 @@ A Python library for QuickBooks Desktop integration through [QuBe Sync](https://
 ## Features
 
 - 🔌 **v2 API client** - Connections, workflow runs and their questions, every QuickBooks operation as a typed method (`qube.customer.create`), with retries and idempotency
+- 🧩 **Integration kit** - Webhooks, onboarding and questions for Django, Flask and FastAPI (`qubesync.kit`), so your app keeps only its own code
 - 🔌 **v1 API client (legacy)** - Connect, queue requests, handle webhooks
 - 🏗️ **Intuitive Request Builder DSL** - Build QBXML requests with Python syntax
 - 🔒 **Webhook security** - Built-in signature verification for webhooks
@@ -291,6 +292,260 @@ def qube_webhook():
 
 `QubeSync.verify_and_build_webhook(body, signature)` (0.1.x, reads `QUBE_WEBHOOK_SECRET`)
 still works and returns a plain dict.
+
+## Integration kit
+
+The kit is the part of a QuBe Sync integration that's the same for every app: the webhook
+endpoint and its job, onboarding, the question routes and their template, and the `Operation`
+and `ConnectionEvents` bases with their reference, revision and delivery-id checks. It ships in
+this package, so `pip install -U qubesync` updates it, and your app keeps only its own code:
+
+```
+quickbooks_desktop/
+    config.py          qubesync.kit.configure(...): the one place the kit reads your app from
+    create_invoice.py  an Operation subclass per way your app starts a workflow
+    connection.py      a ConnectionEvents subclass: the account, and the connection's handlers
+```
+
+`qubesync.kit` is framework-free. The adapters, `qubesync.django`, `qubesync.flask` and
+`qubesync.fastapi`, each come with an extra that installs the framework:
+
+```bash
+pip install "qubesync[django]>=0.4.0"    # or [flask], or [fastapi]
+```
+
+### Settings
+
+`qubesync.kit.configure(...)` in `quickbooks_desktop/config.py`. A setting your app hasn't
+written raises `qubesync.kit.NotConfigured` the first time it's needed, naming that file, so
+nothing silently passes. `repr(qubesync.kit.settings())` never shows the API key or the secret.
+
+| Setting | What it is | Default |
+| --- | --- | --- |
+| `operations` | `{"create_invoice": CreateInvoice}`: each operation by the slug in its webhook URL (a class, or its dotted path, imported at first use) | none: raises |
+| `connection` | your `ConnectionEvents` subclass (or its dotted path). `connection` is its slug in webhook URLs, never an operation's | none: raises |
+| `current_account` | `(request) -> account`: the signed-in customer's account. `None` answers onboarding 401 | none: raises |
+| `authorize_question` | `(request, record, operation) -> True` when the signed-in user may answer or search that record's question. Only `True` allows | none: every answer and search is refused (403), and logged |
+| `enqueue` | `(operation, record_id, body)`: hands a verified webhook to your queue, whose job calls `qubesync.kit.run(operation, record_id, body)` | one worker thread in this process (FastAPI: background tasks, one at a time), with a warning: a restart loses what hasn't run |
+| `dedupe` | an object with `seen(key)` and `remember(key)`, for notification delivery ids | in memory, with a warning |
+| `api_key`, `base_url`, `webhook_secret`, `webhook_url` | | `QUBE_API_KEY`, `QUBE_URL` (`https://qubesync.com`), `QUBE_WEBHOOK_SECRET`, `QUBE_WEBHOOK_URL`, read at first use. `webhook_secret` may be a list while a secret rotates |
+| `client` | a `qubesync.Client` to use instead of the one made from `api_key` and `base_url` (tests) | |
+| `render_question` | `(context) -> HTML`, instead of the packaged question template (Flask and FastAPI's `question_html`) | |
+
+`qube env --write .env` writes `QUBE_URL`, `QUBE_API_KEY` and `QUBE_WEBHOOK_SECRET`.
+`QUBE_WEBHOOK_URL` is the base of each run's and each connection's webhook URL: `qube listen
+--write-env .env` writes it in development, and in production it's your app's
+`https://<your app>/webhooks/qube`.
+
+Write `authorize_question` first: the record's id comes from the URL, so it's all that keeps one
+customer's users off another's records.
+
+Before production, point `enqueue` at a durable queue and `dedupe` at your database or cache.
+With Celery:
+
+```python
+# quickbooks_desktop/tasks.py
+@app.task
+def qube_webhook(operation, record_id, body):
+    qubesync.kit.run(operation, record_id, body)  # raises: Celery retries
+
+# quickbooks_desktop/config.py
+qubesync.kit.configure(enqueue=lambda *job: qube_webhook.delay(*job), dedupe=DeliveryStore())
+```
+
+QuBe Sync had its 2xx when the event was handed on, so a job that raises is your queue's to
+retry. `run` raises when `find_record` returns `None`.
+
+### Routes
+
+Relative to where your app mounts them:
+
+| | |
+| --- | --- |
+| `POST quickbooks/connect` | onboarding: creates the account's connection (or reuses it, with its webhook URL brought up to date and a fresh link), and redirects (303) to QuBe Sync's setup. Behind your sign-in |
+| `POST webhooks/qube/<operation>/<record_id>` | verifies the signature (401, logging only the reason), 404 for an unknown slug, 413 over 5 MB, enqueues, 200. Any content type. No sign-in, no CSRF |
+| `POST qube/questions/<operation>/<record_id>` | your user's choice, with its fields as their types: 303 back to the page, 409 when the question changed (a 409, or any 400, from QuBe Sync: it's forgotten), 422 with QuBe Sync's words. Behind sign-in and CSRF |
+| `GET qube/questions/<operation>/<record_id>/search` | a record field's matches, as JSON (`q` of 2 to 100 characters and a `field`, else `[]`). Behind sign-in |
+
+### Your operation class
+
+The same in every framework, apart from the base you import:
+
+```python
+# quickbooks_desktop/create_invoice.py
+from qubesync.django import Operation      # or qubesync.flask / qubesync.fastapi
+from qubesync.kit import mapping as m
+
+
+class CreateInvoice(Operation):
+    workflow = "add_transaction"
+    slug = "create_invoice"
+
+    @classmethod
+    def find_record(cls, record_id):
+        return Invoice.objects.filter(pk=record_id).first()  # SQLAlchemy: session.get(Invoice, record_id)
+
+    def input(self):
+        return m.without_nils({
+            "operation": "invoice.create",
+            "params": {
+                "customer_ref": {"full_name": m.get(self.record, "customer", "name")},
+                "ref_number": m.as_string(self.record.number),
+                "txn_date": m.as_date(self.record.issued_on),
+            },
+        })
+
+    def ended(self, event):
+        if event.outcome == "added":
+            self.record.txn_id = m.dig(event, "output", "record", "txn_id")
+            self.save_record(["txn_id"])
+
+    def failed(self, event):
+        ...  # event.outcome, event.error, event.cancel_reason
+
+# Elsewhere: CreateInvoice.start(invoice, account.qube_connection_id)
+```
+
+The record keeps `qube_reference` (a string), `qube_revision` (an integer) and, for a workflow
+that asks, `qube_question` and `qube_links` (JSON). Override `saved_reference` /
+`save_reference`, `saved_revision` / `save_revision`, `saved_question` / `saved_links` /
+`save_question`, or `save_record`, to keep them elsewhere. Handlers you don't write log.
+
+```python
+# quickbooks_desktop/connection.py
+from qubesync.django import ConnectionEvents
+
+
+class Connection(ConnectionEvents):
+    @classmethod
+    def find_record(cls, record_id):
+        return Account.objects.get(pk=record_id)
+
+    def connected(self, event): ...        # QuickBooks is connected
+    def setup_cancelled(self, event): ...  # offer Connect again
+    def stalled(self, event): ...          # event.stall_reason: not_checking_in, quickbooks_unavailable
+    def resumed(self, event): ...          # clear what stalled showed
+```
+
+The account keeps `qube_connection_id` and `qube_connection_revision`; a new connection's id
+clears the revision. Override `saved_connection_id` / `save_connection_id` and `saved_revision`
+/ `save_revision` to keep them elsewhere.
+
+### Django
+
+```python
+# settings.py
+INSTALLED_APPS += ["qubesync.django"]
+
+# urls.py
+urlpatterns += [path("", include("qubesync.django.urls"))]
+
+# quickbooks_desktop/config.py: imported when the apps are ready (or set QUBESYNC_CONFIG to
+# another module's dotted path)
+import qubesync.kit
+
+qubesync.kit.configure(
+    operations={"create_invoice": "quickbooks_desktop.create_invoice.CreateInvoice"},
+    connection="quickbooks_desktop.connection.Connection",
+    current_account=lambda request: request.user.account,
+    authorize_question=lambda request, record, operation: record.account_id == request.user.account_id,
+)
+```
+
+- Onboarding and the question routes are behind `login_required`. With another sign-in,
+  include `qubesync.django.urls.patterns(sign_in=your_decorator)`:
+  `path("", include((qubesync.django.urls.patterns(sign_in=staff_only), "qubesync")))`.
+- The webhook view is `csrf_exempt` and reads the raw body from the request's stream, so
+  `DATA_UPLOAD_MAX_MEMORY_SIZE` (2.5 MB by default) doesn't cap it; the kit takes up to 5 MB.
+- `qubesync.django.Operation` and `ConnectionEvents` save with `save(update_fields=...)` and
+  apply each event inside `transaction.atomic`, with the row read again under
+  `select_for_update` (override `lock_record`), so two workers never apply one record's events
+  at once and a handler that raises leaves the record as it was.
+- The default queue gives its thread a database connection of its own (`close_old_connections`).
+
+The question template, on the record's page:
+
+```python
+context = {"invoice": invoice, **qubesync.django.question_context("create_invoice", invoice)}
+return render(request, "invoice.html", context)
+```
+
+```django
+{% include "qubesync/question.html" %}
+```
+
+It writes a form per choice with its CSRF token, a search box for a record field, and `qube-`
+classes for your CSS (with django-csp, the search script carries `request.csp_nonce`). For
+other markup, put your own at `templates/qubesync/question.html` in a directory Django searches
+first (`DIRS`, or an app above `qubesync.django` in `INSTALLED_APPS`); it reads `question`
+(`message`, `details`, `choices` with their `fields`, `token`) and `action`.
+
+### Flask
+
+```python
+# app.py
+import quickbooks_desktop.config  # its qubesync.kit.configure(...), as above
+import qubesync.flask
+from flask_login import login_required
+
+qubesync.flask.init_app(app, sign_in=login_required)
+```
+
+- `qubesync.flask.blueprints(sign_in=None, url_prefix=None)` returns the three blueprints
+  (`webhooks`, `connect`, `questions`) to register yourself; `sign_in` (a view decorator) goes
+  on onboarding and the question routes, or put your own `before_request` on those two.
+- With Flask-WTF's `CSRFProtect` set up before the blueprints are registered, the webhooks
+  blueprint is exempted; set up after, call `csrf.exempt(bps.webhooks)`. A `MAX_CONTENT_LENGTH`
+  under 5 MB refuses large webhooks first.
+- `qubesync.flask.Operation` and `ConnectionEvents` save by committing the SQLAlchemy session
+  the record belongs to, so `find_record` returns a record from your session. Take the row lock
+  as you find it (`select(Invoice).where(Invoice.id == record_id).with_for_update()`); override
+  `save_record` for another ORM.
+- The default queue runs each job in an app context of your app's.
+
+The question template: `render_template("invoice.html", invoice=invoice,
+**qubesync.flask.question_context("create_invoice", invoice))` with `{% include
+"qubesync/question.html" %}` in `invoice.html` (it writes Flask-WTF's `csrf_token()` when it's
+there, and a `csp_nonce` from the context), or pass the page
+`qubesync.flask.question_html("create_invoice", invoice)` from the view. Your own `templates/qubesync/question.html` is found first, or set
+`render_question`.
+
+### FastAPI
+
+```python
+# main.py
+import quickbooks_desktop.config  # its qubesync.kit.configure(...), as above
+import qubesync.fastapi
+
+qube = qubesync.fastapi.routers()
+app.include_router(qube.webhooks)
+app.include_router(qube.connect, dependencies=[Depends(signed_in)])
+app.include_router(qube.questions, dependencies=[Depends(signed_in)])
+# or: app.include_router(qubesync.fastapi.router(dependencies=[Depends(signed_in)]))
+```
+
+- Your sign-in dependency puts the user where `current_account` and `authorize_question` read
+  it (`request.state.user`, say).
+- The webhook reads the raw body from `request.stream()`, capped at 5 MB. Without
+  an `enqueue` setting, each job is a background task, one at a time. Answers read a form
+  (`python-multipart`, in the extra); the record and the calls to QuBe Sync run on a worker
+  thread.
+- `qubesync.fastapi.Operation` and `ConnectionEvents` save through SQLAlchemy, as Flask's do.
+
+The question template: `qubesync.fastapi.add_templates(templates)` lets your `Jinja2Templates`
+find `qubesync/question.html` after your own directories (so yours, at
+`templates/qubesync/question.html`, wins); then pass
+`qubesync.fastapi.question_context(request, "create_invoice", invoice)` to the page and
+`{% include "qubesync/question.html" %}`, or render it with
+`qubesync.fastapi.question_html(request, "create_invoice", invoice, templates=templates,
+csrf_token=...)`. Set `render_question` for other markup.
+
+### Another framework
+
+`qubesync.kit.receive`, `connect`, `answer` and `search` do each route's work and return a
+`Reply` (`status`, and `text`, `json` or `location`); an adapter reads the request, calls one,
+and writes the response. `qubesync.kit.question_context(operation, record, action)` is the
+template's context.
 
 ## v1 (legacy)
 

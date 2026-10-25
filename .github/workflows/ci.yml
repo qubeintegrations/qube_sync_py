@@ -28,3 +28,36 @@ jobs:
           python -m pip install mypy
           python -m mypy --strict --warn-unused-ignores tests/typecheck/sample.py
       - run: python -m build
+  kit:
+    # The integration kit's adapters, on the oldest and newest framework each Python takes:
+    # Django 3.2 and Flask 2 on Python 3.8, the newest Django and Flask 3 on 3.13, and the
+    # newest FastAPI each Python installs.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.8"
+            django: "Django>=3.2,<4"
+            flask: "Flask>=2,<3"
+            werkzeug: "Werkzeug<3"
+          - python: "3.13"
+            django: "Django"
+            flask: "Flask>=3"
+            werkzeug: "Werkzeug"
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install --upgrade pip build
+      - run: >-
+          python -m pip install -e ".[test]" "${{ matrix.django }}" "${{ matrix.flask }}"
+          "${{ matrix.werkzeug }}" "SQLAlchemy>=1.4" fastapi "jinja2>=3" python-multipart
+      - run: python -m pip list | grep -iE '^(django|flask|fastapi|starlette|sqlalchemy) '
+      - run: python -m pytest -q tests/test_kit.py tests/test_kit_django.py tests/test_kit_flask.py tests/test_kit_fastapi.py
+      - name: The wheel ships the question templates
+        run: |
+          python -m build -w
+          python -m zipfile -l dist/*.whl | grep -q 'qubesync/kit/templates/qubesync/question.html'
+          python -m zipfile -l dist/*.whl | grep -q 'qubesync/django/templates/qubesync/question.html'

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-25
+
+### Added
+- `qubesync.kit`, the integration kit without a framework: `configure(**settings)` / `settings()`
+  (`operations`, `connection`, `current_account`, `authorize_question`, `enqueue`, `dedupe`,
+  `api_key`, `base_url`, `webhook_secret`, `webhook_url`, `client`, `render_question`; an unset
+  one raises `NotConfigured` naming `quickbooks_desktop/config.py`; `repr` hides the secrets),
+  the `Operation` and `ConnectionEvents` bases, the job `run(operation, record_id, body)`, the
+  routes' work (`receive`, `connect`, `answer`, `search`, returning a `Reply`), the answer helpers
+  (`choice`, `answer_data`, `refusal`, `back`), `question_context`, the mapping helpers
+  (`without_nils`, `get`, `dig`, `rows`, `as_string`, `as_number`, `as_integer`, `as_date`) and
+  SQLAlchemy bases (`qubesync.kit.sqlalchemy`). It imports no framework.
+- `qubesync.django` (extra `django`): an installed app with `qubesync.django.urls`, the views,
+  `templates/qubesync/question.html`, and bases that save with `save(update_fields=...)` under
+  `select_for_update` in `transaction.atomic`.
+- `qubesync.flask` (extra `flask`): `blueprints()` / `init_app()`, the Jinja question template,
+  `question_context` and `question_html`, SQLAlchemy bases.
+- `qubesync.fastapi` (extra `fastapi`): `routers()` / `router()`, `add_templates`,
+  `question_context` and `question_html`, SQLAlchemy bases.
+
 ## [0.3.0] - 2026-10-25
 
 ### Added

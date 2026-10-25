@@ -136,7 +136,7 @@ def test_exports():
     assert qubesync.Client is Client
     assert issubclass(APIError, QubeSyncError)
     assert "Client" in qubesync.__all__ and "APIError" in qubesync.__all__
-    assert qubesync.__version__ == "0.3.0"
+    assert qubesync.__version__ == "0.4.0"
 
 
 @pytest.mark.parametrize("key", [None, "", "   "])
@@ -170,7 +170,7 @@ def test_basic_auth_and_headers(client, fake):
     expected = "Basic " + base64.b64encode((API_KEY + ":").encode()).decode()
     assert req["headers"]["authorization"] == expected
     assert req["headers"]["accept"] == "application/json"
-    assert req["headers"]["user-agent"] == "qubesync-python/0.3.0"
+    assert req["headers"]["user-agent"] == "qubesync-python/0.4.0"
     assert "content-type" not in req["headers"]
     assert "idempotency-key" not in req["headers"]
 
