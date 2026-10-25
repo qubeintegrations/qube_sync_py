@@ -11,18 +11,21 @@ A refused request raises :class:`APIError`; a connection that still fails after 
 raises the ``requests`` exception unchanged.
 """
 
+import datetime
 import json
 import random
 import time
 import uuid
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
-from urllib.parse import parse_qs, quote, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, quote_plus, urlencode, urlsplit
 
 import requests
 from urllib3.exceptions import ConnectTimeoutError, NewConnectionError
 
 from ._version import __version__
 from .errors import QubeSyncError
+from .operations import OPERATIONS
+from .operations._accessors import OperationsMixin
 
 __all__ = ["Client", "APIError"]
 
@@ -143,32 +146,57 @@ def _origin_text(parts):
     return "%s://%s:%s" % (scheme, host, port)
 
 
-def _query_value(key, value):
-    # type: (str, Any) -> Any
-    if isinstance(value, dict):
-        raise ValueError("query parameter %r is a dict; only scalars and lists go in a query string" % key)
+def _scalar(key, value):
+    # type: (str, Any) -> str
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    if isinstance(value, (datetime.date, datetime.datetime)):
+        return value.isoformat()
+    raise ValueError("query parameter %s must be a string, number, boolean, list or dict" % key)
+
+
+def _query_pairs(key, value, top, pairs):
+    # type: (str, Any, bool, List[Tuple[str, str]]) -> None
+    if value is None:
+        return
     if isinstance(value, (list, tuple)):
-        return [_query_value(key, v) for v in value]
-    return value
+        for item in value:
+            if item is None:
+                continue
+            if isinstance(item, (list, tuple)):
+                raise ValueError("query parameter %s can't hold a list of lists" % key)
+            if isinstance(item, dict):
+                _query_pairs(key + "[]", item, False, pairs)
+            else:
+                pairs.append((key if top else key + "[]", _scalar(key, item)))
+        return
+    if isinstance(value, dict):
+        for sub, inner in value.items():
+            _query_pairs("%s[%s]" % (key, sub), inner, False, pairs)
+        return
+    pairs.append((key, _scalar(key, value)))
+
+
+def _quote(text, safe="", encoding=None, errors=None):
+    # As a WHATWG URLSearchParams writes it (what the Node library sends): `*` kept, `~` escaped.
+    return quote_plus(text, safe="*", encoding=encoding, errors=errors).replace("~", "%7E")
 
 
 def _encode_query(query):
     # type: (Optional[Dict[str, Any]]) -> str
+    """A query string as the v2 API reads it: a top-level list of scalars repeats its bare key
+    (``ref_number=A&ref_number=B``), a dict brackets its keys (``name_range[from]=A``), a list
+    inside one brackets too (``filter[list_id][]=a``), booleans are ``true``/``false``."""
     if not query:
         return ""
-    pairs = []
+    pairs = []  # type: List[Tuple[str, str]]
     for key, value in query.items():
-        if value is None:
-            continue
-        value = _query_value(key, value)
-        if isinstance(value, list):
-            for v in value:
-                pairs.append((key, v))
-        else:
-            pairs.append((key, value))
-    return urlencode(pairs)
+        _query_pairs(str(key), value, True, pairs)
+    return urlencode(pairs, quote_via=_quote)
 
 
 def _has_prompt_token(url):
@@ -203,8 +231,12 @@ def _compact(**values):
     return {k: v for k, v in values.items() if v is not None}
 
 
-class Client:
+class Client(OperationsMixin):
     """A QuBe Sync v2 API client.
+
+    Every QuickBooks operation is a method on its entity: ``client.customer.create(...)``,
+    ``client.invoice.query(...)``, ``client.txn_void.execute(...)`` (``class`` is ``client.class_``).
+    An entity's module is imported the first time it's used.
 
     Args:
         api_key: your app's API key (required). Sent as HTTP Basic auth, never logged or shown.
@@ -379,30 +411,62 @@ class Client:
 
     # -- Queued requests ---------------------------------------------------------------------
 
-    def queue(self, connection_id, operation, params=None, *, webhook_url, method="post", idempotency_key=None):
-        # type: (str, str, Optional[Dict[str, Any]], Optional[str], str, Optional[str]) -> Any
-        """Queue an operation: ``queue(conn_id, "customers", {"name": "Acme"}, webhook_url=...)``.
+    def queue(
+        self,
+        operation_id,  # type: str
+        connection_id,  # type: str
+        params=None,  # type: Optional[Dict[str, Any]]
+        *,
+        webhook_url,  # type: str
+        idempotency_key=None,  # type: Optional[str]
+        method=None,  # type: Optional[str]
+        path=None,  # type: Optional[str]
+    ):
+        # type: (...) -> Any
+        """Queue an operation by its id: ``queue("customer.create", conn_id, {"name": "Acme"}, webhook_url=...)``
+        is ``client.customer.create(conn_id, {"name": "Acme"}, webhook_url=...)``.
 
-        ``operation`` is the path after the connection (``"customers"``, ``"txn-deleteds"``...).
-        ``webhook_url`` goes in the query string. For ``method="get"`` or ``"delete"`` the params
-        go in the query string (scalars and lists only); for ``"post"`` or ``"put"`` they're the
-        JSON body. The Idempotency-Key is ``idempotency_key``, or a UUID made for this call and
-        reused on its retries.
+        A known id takes its method, path and params placement from ``qubesync.operations.OPERATIONS``.
+        An operation newer than this version needs ``method=`` (``"post"``, ``"get"``...) and
+        ``path=``, the path after the connection (``"customers"``); its params go in the query
+        string for a GET or DELETE (nested dicts bracketed), else in the JSON body. Given for a
+        known id, ``method`` and ``path`` replace the index's. ``webhook_url`` goes in the query
+        string. The Idempotency-Key is ``idempotency_key``, or a UUID made for this call and
+        reused on its retries. Returns the queued request.
         """
-        if not webhook_url:
-            raise ValueError("webhook_url is required")
-        verb = str(method).upper()
+        known = OPERATIONS.get(operation_id)
+        if known is None and (method is None or path is None):
+            raise ValueError(
+                "unknown operation %r: this version of qubesync doesn't know it, so pass method= and path= "
+                '(the path after the connection, e.g. "customers")' % (operation_id,)
+            )
+        verb = str(method if method is not None else known.method).upper()
         if verb not in ("GET", "POST", "PUT", "DELETE"):
             raise ValueError("method must be get, post, put or delete, got %r" % method)
-        op = str(operation).lstrip("/")
-        if not op:
-            raise ValueError("operation is required")
+        rel = str(path if path is not None else known.path).lstrip("/")
+        if not rel:
+            raise ValueError("path is required")
+        if known is not None and method is None:
+            params_in = known.params_in
+        else:
+            params_in = "query" if verb in ("GET", "DELETE") else "body"
+        return self._queue(verb, connection_id, rel, params_in, params, webhook_url, idempotency_key)
+
+    def _queue_operation(self, operation_id, connection_id, params, webhook_url, idempotency_key):
+        # type: (str, str, Optional[Dict[str, Any]], str, Optional[str]) -> Any
+        """What the generated methods (``client.customer.create``...) call."""
+        op = OPERATIONS[operation_id]
+        return self._queue(op.method, connection_id, op.path, op.params_in, params, webhook_url, idempotency_key)
+
+    def _queue(self, verb, connection_id, rel, params_in, params, webhook_url, idempotency_key):
+        if not webhook_url:
+            raise ValueError("webhook_url is required")
         params = dict(params or {})
-        path = "/connections/%s/%s" % (_seg(connection_id), quote(op, safe="/"))
+        path = "/connections/%s/%s" % (_seg(connection_id), quote(rel, safe="/"))
         headers = {"Idempotency-Key": idempotency_key or str(uuid.uuid4())}
-        if verb in ("GET", "DELETE"):
-            query = dict(params)
-            query["webhook_url"] = webhook_url
+        if params_in == "query":
+            query = {"webhook_url": webhook_url}  # type: Dict[str, Any]
+            query.update((k, v) for k, v in params.items() if k != "webhook_url")
             return self._data(verb, path, query=query, headers=headers)
         return self._data(verb, path, params, query={"webhook_url": webhook_url}, headers=headers)
 

@@ -4,7 +4,7 @@ A Python library for QuickBooks Desktop integration through [QuBe Sync](https://
 
 ## Features
 
-- 🔌 **v2 API client** - Connections, workflow runs and their questions, queued requests, with retries and idempotency
+- 🔌 **v2 API client** - Connections, workflow runs and their questions, every QuickBooks operation as a typed method (`qube.customer.create`), with retries and idempotency
 - 🔌 **v1 API client (legacy)** - Connect, queue requests, handle webhooks
 - 🏗️ **Intuitive Request Builder DSL** - Build QBXML requests with Python syntax
 - 🔒 **Webhook security** - Built-in signature verification for webhooks
@@ -90,21 +90,53 @@ Also `list_runs(connection_id, reference=None, state=None, outcome=None)` and
 
 ### Queueing an operation
 
-```python
-queued = qube.queue(
-    connection_id,
-    "customers",                      # the operation's path after the connection
-    {"name": "Acme Ltd"},
-    webhook_url="https://your-app.com/webhooks/qube",  # where the answer goes
-)
+Every QuickBooks operation is a method on its entity: `qube.<entity>.<action>(connection_id, params, webhook_url=...)`,
+with actions `create`, `update`, `query`, `delete` and `execute`.
 
-# A query: method="get" sends the params as the query string
-qube.queue(connection_id, "txn-deleteds", {"txn_del_type": ["Invoice"]},
-           webhook_url="https://your-app.com/webhooks/qube", method="get")
+```python
+HOOK = "https://your-app.com/webhooks/qube"  # where QuickBooks' answer goes
+
+queued = qube.customer.create(connection_id, {
+    "name": "Acme Ltd",
+    "bill_address": {"addr1": "1 Main St", "city": "Austin", "state": "TX"},
+}, webhook_url=HOOK)
+
+qube.invoice.create(connection_id, {
+    "customer_ref": {"full_name": "Acme Ltd"},
+    "invoice_line_add": [{"item_ref": {"full_name": "Widget"}, "quantity": 2}],
+}, webhook_url=HOOK)
+
+# A query sends its params as the query string, nested filters included
+qube.invoice.query(connection_id, {
+    "modified_date_range_filter": {"from_modified_date": "2026-10-01"},
+    "max_returned": 100,
+}, webhook_url=HOOK)
+
+qube.txn_void.execute(connection_id, {"txn_id": "1A2B-1234567890", "txn_void_type": "Invoice"}, webhook_url=HOOK)
+qube.class_.query(connection_id, webhook_url=HOOK)  # `class` is `class_`
 
 # qbXML as written
-qube.queue_qbxml(connection_id, request_xml, webhook_url="https://your-app.com/webhooks/qube")
+qube.queue_qbxml(connection_id, request_xml, webhook_url=HOOK)
 ```
+
+Each method sends an Idempotency-Key (`idempotency_key=`, or a UUID made for the call and
+reused on its retries) and returns the queued request. A query QuickBooks answers in pages
+still makes one call: the pages come to `webhook_url`, one webhook each. An entity's module is
+imported the first time you use it (`qube.customer`), so the other 123 cost nothing.
+
+The params are `TypedDict`s with every field's description, in `qubesync.operations.<entity>`
+(`from qubesync.operations.invoice import InvoiceCreateParams`) and, for the nested types
+entities share, `qubesync.operations._types` (`Ref`, `Address`...). mypy, pyright and your
+editor check them; a method's docstring lists its fields and links its API reference page.
+
+The escape hatch takes the operation id: `qube.queue("customer.create", connection_id, params,
+webhook_url=HOOK)` is `qube.customer.create(...)`. For an operation newer than your installed
+version, pass `method=` and `path=` (the path after the connection):
+`qube.queue("widget.create", connection_id, params, webhook_url=HOOK, method="post", path="widgets")`.
+
+Query strings follow the API: a list repeats its key (`ref_number=A&ref_number=B`), a nested
+dict brackets its keys (`name_range[from]=A&name_range[to]=M`, a list inside it as
+`filter[list_id][]=a`), and booleans are `true`/`false`.
 
 The answer arrives at `webhook_url` (see [Webhooks](#webhooks)). Also `get_request(connection_id, id)`,
 `request_pages(connection_id, id)`, `discard_request(connection_id, id)`,

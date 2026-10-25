@@ -37,6 +37,9 @@ Issues = "https://github.com/qubeintegrations/qube_sync_py/issues"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+qubesync = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

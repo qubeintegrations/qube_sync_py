@@ -349,7 +349,7 @@ def test_relative_paths_without_a_slash_are_refused(client, fake):
 
 def test_queue_post(client, fake):
     fake.answer({"status": 201, "json": {"data": {"id": "q1", "state": "waiting"}}})
-    data = client.queue("c1", "/customers", {"name": "Acme"}, webhook_url="https://app.test/h?a=1")
+    data = client.customer.create("c1", {"name": "Acme"}, webhook_url="https://app.test/h?a=1")
     assert data == {"id": "q1", "state": "waiting"}
     req = fake.last
     assert (req["method"], req["path"]) == ("POST", "/api/v2/connections/c1/customers")
@@ -360,26 +360,24 @@ def test_queue_post(client, fake):
 
 
 def test_queue_makes_a_new_key_per_call(client, fake):
-    client.queue("c1", "customers", {}, webhook_url="https://app.test/h")
-    client.queue("c1", "customers", {}, webhook_url="https://app.test/h")
+    client.customer.create("c1", {}, webhook_url="https://app.test/h")
+    client.queue("customer.create", "c1", {}, webhook_url="https://app.test/h")
     keys = [r["headers"]["idempotency-key"] for r in fake.requests]
     assert keys[0] != keys[1]
 
 
 def test_queue_uses_the_given_key(client, fake):
-    client.queue("c1", "invoices", {"ref_number": "1"}, webhook_url="https://app.test/h", method="put", idempotency_key="k-1")
+    client.invoice.update("c1", {"ref_number": "1"}, webhook_url="https://app.test/h", idempotency_key="k-1")
     assert fake.last["method"] == "PUT"
     assert fake.last["headers"]["idempotency-key"] == "k-1"
     assert body_of(fake.last) == {"ref_number": "1"}
 
 
 def test_queue_get_puts_params_in_the_query(client, fake):
-    client.queue(
+    client.txn_deleted.query(
         "c1",
-        "txn-deleteds",
-        {"txn_del_type": ["Invoice", "Bill"], "max_returned": 10, "active": True},
+        {"txn_del_type": ["Invoice", "Bill"], "max_returned": 10, "active": True},  # type: ignore
         webhook_url="https://app.test/h",
-        method="get",
     )
     req = fake.last
     assert (req["method"], req["path"]) == ("GET", "/api/v2/connections/c1/txn-deleteds")
@@ -393,15 +391,68 @@ def test_queue_get_puts_params_in_the_query(client, fake):
     assert "idempotency-key" in req["headers"]
 
 
-def test_queue_refuses_a_dict_in_the_query(client, fake):
+def test_nested_query_params_are_bracketed(client, fake):
+    # The same input and output as the Node library's test (qube_sync_node 2d0e263).
+    client.customer.query(
+        "c1",
+        {
+            "list_id": ["80000001-1", "80000002-1"],
+            "max_returned": 10,
+            "name_range": {"from": "A", "to": "M"},
+            "currency_filter": {"full_name": ["US Dollar"]},
+        },
+        webhook_url="https://app.test/hooks",
+    )
+    assert fake.last["raw_query"] == (
+        "webhook_url=https%3A%2F%2Fapp.test%2Fhooks"
+        "&list_id=80000001-1&list_id=80000002-1"
+        "&max_returned=10"
+        "&name_range%5Bfrom%5D=A&name_range%5Bto%5D=M"
+        "&currency_filter%5Bfull_name%5D%5B%5D=US+Dollar"
+    )
+
+
+def test_query_encoding():
+    from qubesync.v2 import _encode_query
+
+    assert _encode_query(
+        {
+            "a": True,
+            "b": False,
+            "n": 2.0,
+            "f": 2.5,
+            "skip": None,
+            "lines": [{"name": "x", "tags": ["p", "q"]}, None],
+            "deep": {"x": {"y": 1}, "none": None},
+            "odd": "a b*~&=",
+        }
+    ) == (
+        "a=true&b=false&n=2&f=2.5"
+        "&lines%5B%5D%5Bname%5D=x&lines%5B%5D%5Btags%5D%5B%5D=p&lines%5B%5D%5Btags%5D%5B%5D=q"
+        "&deep%5Bx%5D%5By%5D=1"
+        "&odd=a+b*%7E%26%3D"
+    )
+    assert _encode_query({}) == ""
     with pytest.raises(ValueError):
-        client.queue("c1", "customers", {"filter": {"name": "x"}}, webhook_url="https://app.test/h", method="get")
+        _encode_query({"list_id": [["a"]]})
+    with pytest.raises(ValueError):
+        _encode_query({"x": object()})
+
+
+def test_request_query_is_encoded_the_same_way(client, fake):
+    client.request("GET", "/workflows", query={"filter": {"state": ["a", "b"]}, "page": 1})
+    assert fake.last["raw_query"] == "filter%5Bstate%5D%5B%5D=a&filter%5Bstate%5D%5B%5D=b&page=1"
+
+
+def test_a_list_of_lists_in_a_query_is_refused(client, fake):
+    with pytest.raises(ValueError):
+        client.customer.query("c1", {"list_id": [["a"]]}, webhook_url="https://app.test/h")
     assert fake.requests == []
 
 
 def test_queue_retries_with_the_same_generated_key(client, fake, sleeps):
     fake.answer({"status": 503}, {"reset": True}, {"status": 201, "json": {"data": {"id": "q1"}}})
-    assert client.queue("c1", "customers", {"name": "A"}, webhook_url="https://app.test/h") == {"id": "q1"}
+    assert client.customer.create("c1", {"name": "A"}, webhook_url="https://app.test/h") == {"id": "q1"}
     keys = [r["headers"]["idempotency-key"] for r in fake.requests]
     assert len(keys) == 3 and len(set(keys)) == 1
     assert uuid.UUID(keys[0]).version == 4

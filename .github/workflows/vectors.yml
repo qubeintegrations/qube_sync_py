@@ -1,7 +1,9 @@
 name: vectors
-# The vendored test vectors must match the ones qubesync.com serves (mix
-# webhook_vectors.gen in qube), so a change to how the server signs or what it
-# sends fails here. Weekly too, so it's caught without a pull request.
+# The vendored test vectors and operations manifest must match the ones
+# qubesync.com serves (mix webhook_vectors.gen and mix library_operations.gen
+# in qube), so a change to how the server signs, what it sends or which
+# operations it takes fails here. Weekly too, so it's caught without a pull
+# request.
 on:
   push:
     branches: [main]
@@ -28,5 +30,28 @@ jobs:
           if ! cmp -s served.json tests/fixtures/test_vectors.json; then
             echo "::error::tests/fixtures/test_vectors.json differs from $url: copy the served file over it and rerun the tests"
             diff tests/fixtures/test_vectors.json served.json | head -40
+            exit 1
+          fi
+  operations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The 404 allowance is for until qubesync.com serves /libraries/operations.json;
+      # it goes once the endpoint is live.
+      - name: tests/fixtures/operations.json matches https://qubesync.com/libraries/operations.json
+        run: |
+          url=https://qubesync.com/libraries/operations.json
+          status=$(curl -sS -o served.json -w '%{http_code}' "$url")
+          if [ "$status" = 404 ]; then
+            echo "::warning::$url isn't served yet; skipped"
+            exit 0
+          fi
+          if [ "$status" != 200 ]; then
+            echo "::error::GET $url answered $status"
+            exit 1
+          fi
+          if ! cmp -s served.json tests/fixtures/operations.json; then
+            echo "::error::tests/fixtures/operations.json differs from $url: copy the served file over it, run python scripts/generate_operations.py, and rerun the tests"
+            diff tests/fixtures/operations.json served.json | head -40
             exit 1
           fi

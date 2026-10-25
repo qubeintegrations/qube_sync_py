@@ -19,5 +19,12 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install --upgrade pip build pytest
       - run: python -m pip install .
+      - name: src/qubesync/operations/ matches tests/fixtures/operations.json
+        run: python scripts/generate_operations.py --check
       - run: python -m pytest -q
+      - name: mypy on a sample of the generated types
+        if: matrix.python == '3.13'
+        run: |
+          python -m pip install mypy
+          python -m mypy --strict --warn-unused-ignores tests/typecheck/sample.py
       - run: python -m build
