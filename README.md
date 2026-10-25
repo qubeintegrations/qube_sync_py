@@ -38,7 +38,7 @@ from qubesync import Client, APIError
 qube = Client(api_key=os.environ["QUBE_API_KEY"])
 ```
 
-`Client(api_key, *, base_url="https://qubesync.com", open_timeout=5, read_timeout=30, max_retries=2)`.
+`Client(api_key, *, base_url="https://qubesync.com", open_timeout=5, read_timeout=30, max_retries=2, total_timeout=60, on_retry=None)`.
 Every method returns the response's `data` as plain dicts and lists. Methods that take a URL take
 the link QuBe Sync gave you (a webhook's or run's `links`), or a path under `/api/v2`.
 
@@ -119,7 +119,30 @@ Anything else: `qube.request("GET", "/workflows", query={...})` returns the whol
 - A GET, PUT or DELETE, or any request with an `Idempotency-Key`, is retried up to `max_retries`
   times (after 0.5 s, then 1 s) when the connection fails or times out, or QuBe Sync answers 429,
   502, 503 or 504. A 429 or 503's `Retry-After` is honoured, up to 30 s. Other POSTs
-  (`create_connection`, `answer`, `cancel_run`...) are sent once.
+  (`create_connection`, `cancel_run`...) are sent once.
+- A call returns or raises within `total_timeout` (60 s), retries and their waits included: each
+  attempt's timeouts are cut to the time left, and a retry whose wait (backoff or `Retry-After`)
+  would leave under a second isn't made, so the call raises what the last attempt got. Pass
+  `max_retries=0` for calls made while a user waits on a page, if 60 s is too long.
+- `answer` is retried when its decisions URL has a `prompt_token` (a run's `links.decisions`
+  always does while it asks). A retry after a lost answer may raise a 409 `APIError` with code
+  `prompt_changed`: the question has been answered, by the first attempt or by someone else.
+  Without a `prompt_token` it's sent once, since an answer sent again could be taken for the
+  run's next question.
+- A retried DELETE (`delete_connection`, or `request("DELETE", ...)`) that gets a 404 returns
+  `None`, as a 204 would, when an earlier attempt's answer was lost after it could have reached
+  QuBe Sync (a read timeout, a connection reset or closed after opening, a 502 or 504): that
+  attempt deleted it. Any other 404 raises, including a retry's 404 after a refused connection, a
+  connect timeout, a 429 or a 503.
+- `on_retry=` is called with a dict before each retry's wait: `attempt` (1, 2...),
+  `max_retries`, `delay` and `elapsed` (seconds), `method`, `url` (without its query string),
+  `status` (or `None`) and `error` (the `requests` exception, or `None`). It never gets the key,
+  headers or body. It isn't called when no retry is made. An exception it raises stops the call
+  and reaches your code.
+
+  ```python
+  qube = Client(api_key=key, on_retry=lambda r: log.warning("QuBe Sync retry %(attempt)d: %(method)s %(url)s %(status)s", r))
+  ```
 - `start_run` sends `reference` as the Idempotency-Key. `queue` and `queue_qbxml` send
   `idempotency_key=` when you pass one, or a UUID made for that call and reused on its retries,
   so a retry never queues a request twice.

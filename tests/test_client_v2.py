@@ -702,3 +702,290 @@ def test_errors_never_show_the_key(fake, client):
     for text in (str(e), repr(e), e.message, e.body):
         assert API_KEY not in text
     assert "authorization" not in repr(e).lower()
+
+
+# -- on_retry, total_timeout, answer retries -----------------------------------------------
+
+
+class FakeTime:
+    """A monotonic clock that the injected sleep moves forward (plus real time passing)."""
+
+    def __init__(self):
+        self.offset = 0.0
+        self.sleeps = []
+
+    def clock(self):
+        return time.monotonic() + self.offset
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.offset += seconds
+
+
+def test_on_retry_for_a_status(fake):
+    calls = []
+    c = Client(API_KEY, base_url=fake.base_url, sleep=lambda s: None, on_retry=calls.append)
+    fake.answer({"status": 503}, {"status": 502}, {"json": {"data": {"id": "c1"}}})
+    url = fake.base_url + "/api/v2/connections/c1/workflow-runs/r1/search?prompt_token=secret&q=acme"
+    client_search = c.search(url, field="customer", q="private term")
+    assert client_search == {"id": "c1"}
+    assert [call["attempt"] for call in calls] == [1, 2]
+    first = calls[0]
+    assert set(first) == {"attempt", "max_retries", "delay", "elapsed", "method", "url", "status", "error"}
+    assert first["max_retries"] == 2
+    assert first["method"] == "GET"
+    assert first["url"] == fake.base_url + "/api/v2/connections/c1/workflow-runs/r1/search"
+    assert first["status"] == 503 and calls[1]["status"] == 502
+    assert first["error"] is None
+    assert isinstance(first["delay"], float) and 0.5 <= first["delay"] <= 0.625
+    assert 1.0 <= calls[1]["delay"] <= 1.25
+    assert isinstance(first["elapsed"], float) and first["elapsed"] >= 0
+    text = repr(calls)
+    for secret in (API_KEY, "secret", "private", "acme", "Basic"):
+        assert secret not in text
+
+
+def test_on_retry_for_a_reset_connection(fake):
+    calls = []
+    c = Client(API_KEY, base_url=fake.base_url, sleep=lambda s: None, on_retry=calls.append)
+    fake.answer({"reset": True}, {"json": {"data": {}}})
+    c.get_connection("c1")
+    assert len(calls) == 1
+    assert calls[0]["status"] is None
+    assert isinstance(calls[0]["error"], requests.ConnectionError)
+    assert calls[0]["url"] == fake.base_url + "/api/v2/connections/c1"
+
+
+def test_on_retry_for_a_refused_connection():
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    calls = []
+    c = Client(API_KEY, base_url="http://127.0.0.1:%d" % port, sleep=lambda s: None, on_retry=calls.append, open_timeout=1)
+    with pytest.raises(requests.ConnectionError):
+        c.get_connection("c1")
+    assert [call["attempt"] for call in calls] == [1, 2]  # not called once retries run out
+    assert all(isinstance(call["error"], requests.ConnectionError) for call in calls)
+    assert API_KEY not in repr(calls)
+
+
+@pytest.mark.parametrize("step", [{"json": {"data": {}}}, {"status": 404, "json": {"errors": "no"}}, {"status": 422}])
+def test_on_retry_not_called_without_a_retry(fake, step):
+    calls = []
+    c = Client(API_KEY, base_url=fake.base_url, sleep=lambda s: None, on_retry=calls.append)
+    fake.answer(step)
+    try:
+        c.get_connection("c1")
+    except APIError:
+        pass
+    assert calls == []
+
+
+def test_on_retry_not_called_when_retries_run_out(fake):
+    calls = []
+    c = Client(API_KEY, base_url=fake.base_url, max_retries=1, sleep=lambda s: None, on_retry=calls.append)
+    fake.answer({"status": 503}, {"status": 503})
+    with pytest.raises(APIError):
+        c.get_connection("c1")
+    assert len(calls) == 1
+
+
+def test_an_exception_from_on_retry_stops_the_call(fake, sleeps):
+    class Stop(Exception):
+        pass
+
+    def hook(info):
+        raise Stop()
+
+    c = Client(API_KEY, base_url=fake.base_url, sleep=sleeps.append, on_retry=hook)
+    fake.answer({"status": 503}, {"json": {"data": {}}})
+    with pytest.raises(Stop):
+        c.get_connection("c1")
+    assert len(fake.requests) == 1
+    assert sleeps == []
+
+
+def test_total_timeout_option():
+    assert Client(API_KEY).total_timeout == 60
+    with pytest.raises(ValueError):
+        Client(API_KEY, total_timeout=0)
+
+
+def test_a_backoff_that_doesnt_fit_isnt_retried(fake):
+    t = FakeTime()
+    calls = []
+    c = Client(API_KEY, base_url=fake.base_url, total_timeout=1.2, sleep=t.sleep, clock=t.clock, on_retry=calls.append)
+    fake.answer({"status": 503, "json": {"errors": "busy"}}, {"json": {"data": {}}})
+    with pytest.raises(APIError) as info:
+        c.get_connection("c1")
+    assert info.value.status == 503
+    assert len(fake.requests) == 1
+    assert t.sleeps == [] and calls == []
+
+
+def test_a_network_error_that_doesnt_fit_is_raised(fake):
+    t = FakeTime()
+    c = Client(API_KEY, base_url=fake.base_url, total_timeout=1.2, sleep=t.sleep, clock=t.clock)
+    fake.answer({"reset": True}, {"json": {"data": {}}})
+    with pytest.raises(requests.ConnectionError):
+        c.get_connection("c1")
+    assert len(fake.requests) == 1
+
+
+def test_a_retry_after_beyond_the_limit_isnt_waited(fake):
+    t = FakeTime()
+    calls = []
+    c = Client(API_KEY, base_url=fake.base_url, total_timeout=10, sleep=t.sleep, clock=t.clock, on_retry=calls.append)
+    fake.answer({"status": 429, "headers": {"Retry-After": "20"}}, {"json": {"data": {}}})
+    with pytest.raises(APIError) as info:
+        c.get_connection("c1")
+    assert info.value.status == 429
+    assert len(fake.requests) == 1
+    assert t.sleeps == [] and calls == []
+
+
+def test_a_retry_after_that_fits_is_waited_in_full(fake):
+    t = FakeTime()
+    c = Client(API_KEY, base_url=fake.base_url, total_timeout=10, sleep=t.sleep, clock=t.clock)
+    fake.answer({"status": 503, "headers": {"Retry-After": "8"}}, {"json": {"data": {"id": "c1"}}})
+    assert c.get_connection("c1") == {"id": "c1"}
+    assert t.sleeps == [8.0]
+
+
+def test_later_attempts_get_the_time_left():
+    now = [0.0]
+    seen = []
+    answers = [503, 503, 200]
+
+    class Session:
+        def request(self, method, url, **kwargs):
+            seen.append(kwargs["timeout"])
+            response = requests.Response()
+            response.status_code = answers.pop(0)
+            response.headers["Retry-After"] = "4"
+            response._content = b'{"data": {}}'
+            response._content_consumed = True
+            return response
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    c = Client(API_KEY, total_timeout=10, open_timeout=5, read_timeout=30, session=Session(), sleep=sleep, clock=lambda: now[0])
+    assert c.get_connection("c1") == {}
+    assert seen == [(5, 10), (5, 6), (2, 2)]
+
+
+def test_a_later_attempts_read_timeout_is_capped_by_the_limit(fake):
+    t = FakeTime()
+    c = Client(API_KEY, base_url=fake.base_url, total_timeout=1.9, read_timeout=30, max_retries=1, sleep=t.sleep, clock=t.clock)
+    # The first answer is a 503 (the 0.5 s backoff passes on the fake clock), leaving ~1.3 s;
+    # the second attempt's server sleeps 3 s, so only the capped read timeout ends it.
+    fake.answer({"status": 503}, {"sleep": 3, "json": {"data": {}}})
+    started = time.monotonic()
+    with pytest.raises(requests.ReadTimeout):
+        c.get_connection("c1")
+    assert time.monotonic() - started < 2.5
+    assert len(t.sleeps) == 1
+
+
+def test_answer_retries_with_a_prompt_token(client, fake, sleeps):
+    url = fake.base_url + "/api/v2/connections/c1/workflow-runs/r1/decisions?prompt_token=tok"
+    fake.answer({"status": 503}, {"json": {"data": {"id": "r1"}}})
+    assert client.answer(url, choice="create") == {"id": "r1"}
+    assert len(fake.requests) == 2
+    assert all(body_of(r) == {"choice": "create"} for r in fake.requests)
+    assert len(sleeps) == 1
+
+
+@pytest.mark.parametrize("query", ["", "?prompt_token=", "?other=1"])
+def test_answer_without_a_prompt_token_is_sent_once(client, fake, sleeps, query):
+    url = fake.base_url + "/api/v2/connections/c1/workflow-runs/r1/decisions" + query
+    fake.answer({"status": 503}, {"json": {"data": {}}})
+    with pytest.raises(APIError):
+        client.answer(url, choice="create")
+    assert len(fake.requests) == 1
+    assert sleeps == []
+
+
+def test_other_posts_stay_unretried_with_a_prompt_token(client, fake, sleeps):
+    url = fake.base_url + "/api/v2/connections/c1/workflow-runs/r1/cancel?prompt_token=tok"
+    fake.answer({"status": 503}, {"json": {"data": {}}})
+    with pytest.raises(APIError):
+        client.cancel_run(url)
+    assert len(fake.requests) == 1
+
+
+# -- A retried DELETE that finds nothing ---------------------------------------------------
+
+
+def test_a_delete_whose_answer_timed_out_then_404_is_success(fake, sleeps):
+    c = Client(API_KEY, base_url=fake.base_url, read_timeout=0.2, sleep=sleeps.append)
+    # The first attempt is carried out (the server deletes) but answers too late.
+    fake.answer({"sleep": 0.6, "status": 204}, {"status": 404, "json": {"errors": {"detail": "Not Found"}}})
+    assert c.delete_connection("c1") is None
+    assert [r["method"] for r in fake.requests] == ["DELETE", "DELETE"]
+
+
+def test_a_delete_whose_connection_reset_then_404_is_success(client, fake):
+    fake.answer({"reset": True}, {"status": 404, "json": {"errors": {"detail": "Not Found"}}})
+    assert client.request("DELETE", "/workflows/w1") is None
+
+
+def test_a_delete_after_a_504_then_404_is_success(client, fake):
+    fake.answer({"status": 504}, {"status": 404, "json": {"errors": {"detail": "Not Found"}}})
+    assert client.delete_connection("c1") is None
+
+
+def test_a_first_attempt_404_on_delete_raises(client, fake):
+    fake.answer({"status": 404, "json": {"errors": {"detail": "Not Found"}}})
+    with pytest.raises(APIError) as info:
+        client.delete_connection("c1")
+    assert info.value.status == 404
+
+
+@pytest.mark.parametrize("status", [503, 429])
+def test_a_delete_after_a_status_that_did_nothing_then_404_raises(client, fake, status):
+    fake.answer({"status": status}, {"status": 404, "json": {"errors": {"detail": "Not Found"}}})
+    with pytest.raises(APIError) as info:
+        client.delete_connection("c1")
+    assert info.value.status == 404
+    assert len(fake.requests) == 2
+
+
+def test_a_delete_after_a_refused_connection_then_404_raises(fake):
+    from qubesync.v2 import _may_have_reached_the_server
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    try:
+        requests.delete("http://127.0.0.1:%d/x" % port, timeout=1)
+    except requests.ConnectionError as e:
+        refused = e
+    assert _may_have_reached_the_server(refused) is False
+
+    # A session that refuses the first attempt the way requests does, then reaches the server.
+    real = requests.Session()
+    calls = []
+
+    class Session:
+        def request(self, method, url, **kwargs):
+            calls.append(method)
+            if len(calls) == 1:
+                raise refused
+            return real.request(method, url, **kwargs)
+
+    fake.answer({"status": 404, "json": {"errors": {"detail": "Not Found"}}})
+    c = Client(API_KEY, base_url=fake.base_url, session=Session(), sleep=lambda s: None)
+    with pytest.raises(APIError) as info:
+        c.delete_connection("c1")
+    assert info.value.status == 404
+    assert calls == ["DELETE", "DELETE"]
+
+
+def test_a_retried_get_404_still_raises(client, fake):
+    fake.answer({"status": 504}, {"status": 404, "json": {"errors": {"detail": "Not Found"}}})
+    with pytest.raises(APIError):
+        client.get_connection("c1")

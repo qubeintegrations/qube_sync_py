@@ -16,9 +16,10 @@ import random
 import time
 import uuid
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 import requests
+from urllib3.exceptions import ConnectTimeoutError, NewConnectionError
 
 from ._version import __version__
 from .errors import QubeSyncError
@@ -33,6 +34,8 @@ _RETRY_AFTER_STATUSES = (429, 503)
 _RETRY_AFTER_CAP = 30.0
 _BACKOFF = (0.5, 1.0)
 _RETRY_SAFE_METHODS = ("GET", "PUT", "DELETE")
+# Answers after which the request may have been carried out though its answer was lost.
+_MAYBE_APPLIED_STATUSES = (502, 504)
 _RAW_BODY_LIMIT = 500
 
 
@@ -168,6 +171,33 @@ def _encode_query(query):
     return urlencode(pairs)
 
 
+def _has_prompt_token(url):
+    # type: (Any) -> bool
+    if not isinstance(url, str):
+        return False
+    tokens = parse_qs(urlsplit(url).query).get("prompt_token") or []
+    return any(t.strip() for t in tokens)
+
+
+def _may_have_reached_the_server(error):
+    # type: (Exception) -> bool
+    """False for a connection that never opened (refused, a connect timeout, a name that
+    doesn't resolve); True for a read timeout, or a connection reset or closed after opening."""
+    if isinstance(error, requests.ConnectTimeout):
+        return False
+    if isinstance(error, requests.ReadTimeout):
+        return True
+    reason = error.args[0] if error.args else None
+    reason = getattr(reason, "reason", reason)
+    return not isinstance(reason, (NewConnectionError, ConnectTimeoutError))
+
+
+def _unwrap(parsed):
+    if isinstance(parsed, dict) and "data" in parsed:
+        return parsed["data"]
+    return parsed
+
+
 def _compact(**values):
     # type: (**Any) -> Dict[str, Any]
     return {k: v for k, v in values.items() if v is not None}
@@ -183,7 +213,16 @@ class Client:
         open_timeout: seconds to wait for the connection to open (5).
         read_timeout: seconds to wait for the answer (30).
         max_retries: how many times to retry a retry-safe request (2).
+        total_timeout: seconds within which every call returns or raises, retries and their
+            waits included (60). Each attempt's timeouts are cut to the time left, and a retry
+            whose wait would leave under a second isn't made.
+        on_retry: called with a dict before each retry's wait: ``attempt`` (the retry about to
+            be made, from 1), ``max_retries``, ``delay`` and ``elapsed`` (seconds), ``method``,
+            ``url`` (without its query string), ``status`` (the HTTP status, or None) and
+            ``error`` (the network exception, or None). Never the key, headers or body. An
+            exception it raises stops the call and reaches the caller.
         sleep: the function that waits between retries (``time.sleep``), for tests.
+        clock: a monotonic clock in seconds (``time.monotonic``), for tests.
         session: a ``requests.Session`` to send through (one is made by default).
     """
 
@@ -195,7 +234,10 @@ class Client:
         open_timeout=5,  # type: float
         read_timeout=30,  # type: float
         max_retries=2,  # type: int
+        total_timeout=60,  # type: float
+        on_retry=None,  # type: Optional[Callable[[Dict[str, Any]], Any]]
         sleep=None,  # type: Optional[Callable[[float], Any]]
+        clock=None,  # type: Optional[Callable[[], float]]
         session=None,  # type: Optional[requests.Session]
     ):
         if not isinstance(api_key, str) or not api_key.strip():
@@ -213,7 +255,14 @@ class Client:
         self.open_timeout = open_timeout
         self.read_timeout = read_timeout
         self.max_retries = max_retries
+        if isinstance(total_timeout, bool) or not isinstance(total_timeout, (int, float)) or total_timeout <= 0:
+            raise ValueError("total_timeout must be a number of seconds above 0")
+        if on_retry is not None and not callable(on_retry):
+            raise ValueError("on_retry must be callable")
+        self.total_timeout = total_timeout
+        self._on_retry = on_retry
         self._sleep = sleep or time.sleep
+        self._clock = clock or time.monotonic
         self._api_key = api_key
         self._session = session or requests.Session()
 
@@ -311,8 +360,17 @@ class Client:
 
     def answer(self, decisions_url, *, choice, data=None):
         # type: (str, str, Optional[Dict[str, Any]]) -> Any
-        """POST a run's ``links.decisions`` with the chosen choice (and its fields' data). Not retried."""
-        return self._data("POST", decisions_url, _compact(choice=choice, data=data))
+        """POST a run's ``links.decisions`` with the chosen choice (and its fields' data).
+
+        Retried like a GET when the URL's query has a ``prompt_token`` (a run's
+        ``links.decisions`` always does while it asks): the token ties the answer to that one
+        question. A retry after a lost answer may raise a 409 ``APIError`` with code
+        ``prompt_changed``: the question was already answered, by the first attempt or by
+        someone else. Without a ``prompt_token`` the answer is sent once, since one sent again
+        could be taken for the run's next question."""
+        retry_safe = _has_prompt_token(decisions_url)
+        parsed = self._request("POST", decisions_url, _compact(choice=choice, data=data), retry_safe=retry_safe)
+        return _unwrap(parsed)
 
     def search(self, search_url, *, field, q):
         # type: (str, str, str) -> Any
@@ -442,6 +500,14 @@ class Client:
         or an absolute URL on the client's own origin (a ``links`` URL). Returns the whole parsed
         JSON body, or None for an empty one. GET, PUT, DELETE and anything with an
         Idempotency-Key header are retried; other requests are sent once."""
+        return self._request(method, path_or_url, body, query=query, headers=headers)
+
+    # -- Internals ---------------------------------------------------------------------------
+
+    def _data(self, method, path_or_url, body=None, query=None, headers=None):
+        return _unwrap(self._request(method, path_or_url, body, query=query, headers=headers))
+
+    def _request(self, method, path_or_url, body=None, query=None, headers=None, retry_safe=False):
         verb = str(method).upper()
         url = self._url(path_or_url, query)
         send_headers = {
@@ -455,13 +521,23 @@ class Client:
         for key, value in (headers or {}).items():
             send_headers[key] = value
 
-        retry_safe = verb in _RETRY_SAFE_METHODS or any(k.lower() == "idempotency-key" for k in send_headers)
+        retry_safe = (
+            retry_safe
+            or verb in _RETRY_SAFE_METHODS
+            or any(k.lower() == "idempotency-key" for k in send_headers)
+        )
         attempts = 1 + (self.max_retries if retry_safe else 0)
+        started = self._clock()
+        # Whether an earlier attempt of this call may have been carried out, its answer lost.
+        maybe_applied = False
 
         attempt = 0
         while True:
             attempt += 1
-            last = attempt >= attempts
+            left = self.total_timeout - (self._clock() - started)
+            timeout = (min(self.open_timeout, left), min(self.read_timeout, left))
+            response = None
+            error = None
             try:
                 response = self._session.request(
                     verb,
@@ -469,28 +545,52 @@ class Client:
                     data=data,
                     headers=send_headers,
                     auth=(self._api_key, ""),
-                    timeout=(self.open_timeout, self.read_timeout),
+                    timeout=timeout,
                 )
-            except (requests.ConnectionError, requests.Timeout):
-                if last:
-                    raise
-                self._sleep(self._backoff(attempt))
-                continue
+            except (requests.ConnectionError, requests.Timeout) as e:
+                error = e
 
-            if response.status_code in _RETRY_STATUSES and not last:
-                wait = self._retry_after(response)
+            if response is not None and response.status_code not in _RETRY_STATUSES:
+                if verb == "DELETE" and response.status_code == 404 and maybe_applied:
+                    # An earlier attempt deleted it and its answer was lost: done, as a 204 is.
+                    response.close()
+                    return None
+                return self._parse(response)
+
+            if error is not None:
+                maybe_applied = maybe_applied or _may_have_reached_the_server(error)
+            elif response.status_code in _MAYBE_APPLIED_STATUSES:
+                maybe_applied = True
+
+            delay = None
+            if attempt < attempts:
+                delay = self._retry_after(response) if response is not None else None
+                if delay is None:
+                    delay = self._backoff(attempt)
+                elapsed = self._clock() - started
+                if self.total_timeout - (elapsed + delay) < 1:
+                    delay = None  # the wait doesn't fit in what's left: no retry
+            if delay is None:
+                if error is not None:
+                    raise error
+                return self._parse(response)
+
+            if response is not None:
                 response.close()
-                self._sleep(wait if wait is not None else self._backoff(attempt))
-                continue
-            return self._parse(response)
-
-    # -- Internals ---------------------------------------------------------------------------
-
-    def _data(self, method, path_or_url, body=None, query=None, headers=None):
-        parsed = self.request(method, path_or_url, body, query=query, headers=headers)
-        if isinstance(parsed, dict) and "data" in parsed:
-            return parsed["data"]
-        return parsed
+            if self._on_retry is not None:
+                self._on_retry(
+                    {
+                        "attempt": attempt,
+                        "max_retries": self.max_retries,
+                        "delay": float(delay),
+                        "elapsed": float(elapsed),
+                        "method": verb,
+                        "url": url.split("?", 1)[0],
+                        "status": response.status_code if response is not None else None,
+                        "error": error,
+                    }
+                )
+            self._sleep(delay)
 
     def _url(self, path_or_url, query):
         # type: (str, Optional[Dict[str, Any]]) -> str

@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   timeout, 429, 502, 503 and 504, for GET, PUT, DELETE and any request with an
   Idempotency-Key. `start_run` sends `reference` as the key; `queue` and `queue_qbxml` send the
   given `idempotency_key` or a UUID reused on that call's retries.
+- `total_timeout=60`: every call returns or raises within it, retries and their waits included.
+  Each attempt's timeouts are cut to the time left, and a retry whose wait would leave under a
+  second isn't made (a `Retry-After` is never shortened).
+- `on_retry=`: called before each retry's wait with `attempt`, `max_retries`, `delay`,
+  `elapsed`, `method`, `url` (no query string), `status` and `error`; never the key, headers or
+  body. An exception it raises stops the call.
+- `answer` is retried when its decisions URL has a `prompt_token`; a retry after a lost answer
+  may raise a 409 with code `prompt_changed`.
+- A retried DELETE that gets a 404 after an earlier attempt's answer was lost (a read timeout,
+  a reset or closed connection, a 502 or 504) returns `None`, as a 204 would.
 - `qubesync.APIError(QubeSyncError)` for any non-2xx answer: `status`, `errors`, `code`,
   `message`, `body`, `request_id`. The API key never appears in an error or `repr(client)`.
 
