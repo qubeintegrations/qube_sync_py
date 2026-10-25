@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-25
+
+### Added
+- `qubesync.Client`, a client for the v2 API (`/api/v2`): `Client(api_key, base_url=..., open_timeout=5,
+  read_timeout=30, max_retries=2)`. It never reads the environment. Methods for connections
+  (`create_connection`, `get_connection`, `list_connections`, `update_connection`,
+  `delete_connection`, `regenerate_onboarding`, `set_password`, `get_qwc`), workflow runs
+  (`start_run`, `get_run`, `list_runs`, `cancel_run`, `run_events`), questions (`answer`,
+  `search`), queued requests (`queue`, `queue_qbxml`, `get_request`, `request_pages`,
+  `list_requests`, `iter_requests`, `discard_request`) and `request` for anything else. Each
+  returns the response's `data` as plain dicts and lists.
+- Links from webhooks and runs are accepted only on the client's own scheme, host and port;
+  anything else raises `ValueError` before a request is made.
+- Retries (0.5 s, then 1 s; `Retry-After` honoured up to 30 s) on a failed connection, a
+  timeout, 429, 502, 503 and 504, for GET, PUT, DELETE and any request with an
+  Idempotency-Key. `start_run` sends `reference` as the key; `queue` and `queue_qbxml` send the
+  given `idempotency_key` or a UUID reused on that call's retries.
+- `qubesync.APIError(QubeSyncError)` for any non-2xx answer: `status`, `errors`, `code`,
+  `message`, `body`, `request_id`. The API key never appears in an error or `repr(client)`.
+
 ### Changed
+- The README leads with the v2 client; the `QubeSync` class (v1) is documented under
+  "v1 (legacy)" and is unchanged.
 - Releases publish through PyPI trusted publishing, from `release.yml`'s OIDC token; no API
   token is stored.
 

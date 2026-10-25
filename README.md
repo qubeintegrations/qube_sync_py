@@ -1,10 +1,11 @@
 # QubeSync Python Library
 
-A Python library for seamless QuickBooks integration via the QubeSync API. This library provides both a robust API client for QubeSync operations and a powerful DSL (Domain Specific Language) for building QuickBooks XML requests.
+A Python library for QuickBooks Desktop integration through [QuBe Sync](https://docs.qubesync.com): a client for the v2 API, webhook verification, and (for v1) a DSL for building QuickBooks XML requests.
 
 ## Features
 
-- 🔌 **Complete QubeSync API client** - Connect, queue requests, handle webhooks
+- 🔌 **v2 API client** - Connections, workflow runs and their questions, queued requests, with retries and idempotency
+- 🔌 **v1 API client (legacy)** - Connect, queue requests, handle webhooks
 - 🏗️ **Intuitive Request Builder DSL** - Build QBXML requests with Python syntax
 - 🔒 **Webhook security** - Built-in signature verification for webhooks
 - 🚀 **Multiple syntax styles** - Context managers, fluent chaining, or Ruby-like syntax
@@ -25,118 +26,121 @@ cd qube_sync_py
 pip install -e .
 ```
 
-## Quick Start
+## v2 client
 
-### Environment Setup
-
-Set your QubeSync credentials:
-
-```bash
-export QUBE_API_KEY="your_api_key_here"
-export QUBE_WEBHOOK_SECRET="your_webhook_secret_here"
-export QUBE_URL="https://qubesync.com/api/v1"  # Optional, defaults to this
-```
-
-### Basic Usage
+`qubesync.Client` calls the [QuBe Sync v2 API](https://docs.qubesync.com). It never reads the
+environment: make one from your app's settings and pass the key in.
 
 ```python
-from qubesync import QubeSync, RequestBuilder
+import os
+from qubesync import Client, APIError
 
-# 1. Create a connection
-connection = QubeSync.create_connection({
-    "name": "My Customer Inc.", # optional (will populate from QuickBooks on first sync if blank)
-    "redirect_url": "https://your-app.com/qbd-setup/callback"
-})
-
-# 2. Build a request using the DSL
-request = RequestBuilder(version="16.0")
-with request as r:
-    with r.QBXML() as qbxml:
-        with qbxml.QBXMLMsgsRq(onError='stopOnError') as msgs:
-            with msgs.CustomerQueryRq(requestID='customer_123', iterator='Start') as query:
-                query.MaxReturned(50)
-                query.IncludeRetElement('ListID')
-                query.IncludeRetElement('Name')
-                query.IncludeRetElement('Email')
-
-# 3. Queue the request
-response = QubeSync.queue_request(connection['id'], {
-    'request_json': request.as_json(),
-    'webhook_url': 'https://your-app.com/webhooks/qb_response'
-})
-
-print(f"Request queued with ID: {response['id']}")
+qube = Client(api_key=os.environ["QUBE_API_KEY"])
 ```
 
-## API Client Reference
+`Client(api_key, *, base_url="https://qubesync.com", open_timeout=5, read_timeout=30, max_retries=2)`.
+Every method returns the response's `data` as plain dicts and lists. Methods that take a URL take
+the link QuBe Sync gave you (a webhook's or run's `links`), or a path under `/api/v2`.
 
-### Connection Management
+### Onboarding a customer
 
 ```python
-from qubesync import QubeSync
+connection = qube.create_connection(
+    webhook_url="https://your-app.com/webhooks/qube",  # connection.* events
+    name="Acme Ltd",                                    # optional
+)
+save(connection["id"])
+redirect_to(connection["links"]["onboarding"])  # QuBe Sync walks your customer through setup
 
-# Create a new connection
-connection = QubeSync.create_connection({
-    "name": "My Customer Inc.", # optional (will populate from QuickBooks on first sync if blank)
-    "redirect_url": "https://your-app.com/qbd-setup/callback"
-})
-
-# Get connection details
-connection = QubeSync.get_connection(connection_id)
-
-# Delete a connection
-QubeSync.delete_connection(connection_id)
-
-# Generate QWC file for QuickBooks
-qwc_content = QubeSync.get_qwc(connection_id)
-
-# Generate password for QuickBooks connection
-password = QubeSync.generate_password(connection_id)
+# Later: a fresh link, or a new webhook URL
+qube.regenerate_onboarding(connection["id"])
+qube.update_connection(connection["id"], webhook_url="https://your-app.com/webhooks/qube2")
 ```
 
-### Request Management
+Also `get_connection(id)`, `list_connections()`, `delete_connection(id)`, and for a setup
+without hosted onboarding `set_password(id, password=None)` and `get_qwc(id)` (the QWC file's XML).
+
+### Starting a run and answering its question
 
 ```python
-# Queue a request
-request_data = {
-    'request_json': {...},  # Built using RequestBuilder
-    'webhook_url': 'https://your-app.com/webhook'
-}
-response = QubeSync.queue_request(connection_id, request_data)
+run = qube.start_run(
+    connection_id,
+    "push_invoice",
+    {"invoice": {...}},
+    reference="invoice-1042",  # your record's id; also the Idempotency-Key
+    webhook_url="https://your-app.com/webhooks/qube",
+)
 
-# Get request status
-request = QubeSync.get_request(request_id)
+# In your webhook handler, for a workflow_run.awaiting_input event:
+prompt = event.prompt
+# ...show the prompt's choices to your user, then send the one they picked:
+qube.answer(event.links["decisions"], choice="use:1")
+qube.answer(event.links["decisions"], choice="create", data={"name": "Acme Ltd"})
 
-# Get all requests for a connection
-requests = QubeSync.get_requests(connection_id)
+# A choice whose field is searched: look records up as your user types
+matches = qube.search(event.links["search"], field="customer", q="acm")
 
-# Delete a request
-QubeSync.delete_request(request_id)
+qube.get_run(event.links["run"])                  # or qube.get_run(connection_id, run_id)
+qube.cancel_run(event.links["cancel"], reason="customer cancelled the order")
 ```
 
-### Webhook Handling
+Also `list_runs(connection_id, reference=None, state=None, outcome=None)` and
+`run_events(connection_id, run_id, after=None, limit=None)`, which returns the whole body
+(`{"data": [...], "next_after": ...}`) so you can page with `after=`.
+
+### Queueing an operation
 
 ```python
-# Verify and parse webhook payload
-def handle_webhook(request):
-    signature = request.headers.get('X-Qube-Signature')
-    # The raw body, bytes or str, before anything parses it
-    body = request.body
+queued = qube.queue(
+    connection_id,
+    "customers",                      # the operation's path after the connection
+    {"name": "Acme Ltd"},
+    webhook_url="https://your-app.com/webhooks/qube",  # where the answer goes
+)
 
-    try:
-        webhook_data = QubeSync.verify_and_build_webhook(body, signature)
-        # Process the verified webhook data in the background
-        # to ensure a quick response
-        print(f"Received response for request: {webhook_data['id']}")
-        return {"status": "success"}
-    except (StaleWebhookError, InvalidWebhookSignatureError) as e:
-        print(f"Webhook verification failed: {e}")
-        return {"status": "error"}, 401
+# A query: method="get" sends the params as the query string
+qube.queue(connection_id, "txn-deleteds", {"txn_del_type": ["Invoice"]},
+           webhook_url="https://your-app.com/webhooks/qube", method="get")
+
+# qbXML as written
+qube.queue_qbxml(connection_id, request_xml, webhook_url="https://your-app.com/webhooks/qube")
 ```
 
-The timestamp in `X-Qube-Signature` must be within 300 seconds (5 minutes) of now, either way,
-or `verify_and_build_webhook` raises `StaleWebhookError`. Pass `max_age` (in seconds) for
-another window. A bad, missing or malformed signature raises `InvalidWebhookSignatureError`.
+The answer arrives at `webhook_url` (see [Webhooks](#webhooks)). Also `get_request(connection_id, id)`,
+`request_pages(connection_id, id)`, `discard_request(connection_id, id)`,
+`list_requests(connection_id, page=None, page_size=None, state=None, ...)` (the whole body,
+`{"data": [...], "meta": {"page": ..., "total_pages": ...}}`), and `iter_requests(connection_id, ...)`,
+a generator over every page.
+
+Anything else: `qube.request("GET", "/workflows", query={...})` returns the whole parsed body.
+
+### Retries, idempotency and errors
+
+- A GET, PUT or DELETE, or any request with an `Idempotency-Key`, is retried up to `max_retries`
+  times (after 0.5 s, then 1 s) when the connection fails or times out, or QuBe Sync answers 429,
+  502, 503 or 504. A 429 or 503's `Retry-After` is honoured, up to 30 s. Other POSTs
+  (`create_connection`, `answer`, `cancel_run`...) are sent once.
+- `start_run` sends `reference` as the Idempotency-Key. `queue` and `queue_qbxml` send
+  `idempotency_key=` when you pass one, or a UUID made for that call and reused on its retries,
+  so a retry never queues a request twice.
+- Any other non-2xx answer raises `APIError` (a `QubeSyncError`): `status`, `errors` (the body's
+  `errors` as it came: a sentence, `{detail, code}`, fields, or a list of problems), `code`
+  (`"prompt_changed"`, `"not_awaiting_input"`...), `message` (one line, safe to log), `body`, and
+  `request_id` (send it to support). A connection that still fails after the retries raises the
+  `requests` exception (`requests.ConnectionError`, `requests.Timeout`).
+- A link on another host is refused with `ValueError` before anything is sent, so the API key
+  only ever goes to `base_url`. The key never appears in `repr(client)` or an error.
+
+```python
+try:
+    qube.answer(event.links["decisions"], choice="use:1")
+except APIError as e:
+    if e.code == "prompt_changed":
+        refresh_question(run)
+    else:
+        log.error("%s (request %s)", e.message, e.request_id)
+        raise
+```
 
 ## Webhooks
 
@@ -233,11 +237,130 @@ def qube_webhook():
 `QubeSync.verify_and_build_webhook(body, signature)` (0.1.x, reads `QUBE_WEBHOOK_SECRET`)
 still works and returns a plain dict.
 
-## RequestBuilder DSL
+## v1 (legacy)
+
+The `QubeSync` class calls the v1 API (`/api/v1`) and reads `QUBE_API_KEY`, `QUBE_URL` and
+`QUBE_WEBHOOK_SECRET` from the environment. It still works, but use the [v2 client](#v2-client)
+for new code.
+
+### Quick Start
+
+#### Environment Setup
+
+Set your QubeSync credentials:
+
+```bash
+export QUBE_API_KEY="your_api_key_here"
+export QUBE_WEBHOOK_SECRET="your_webhook_secret_here"
+export QUBE_URL="https://qubesync.com/api/v1"  # Optional, defaults to this
+```
+
+#### Basic Usage
+
+```python
+from qubesync import QubeSync, RequestBuilder
+
+# 1. Create a connection
+connection = QubeSync.create_connection({
+    "name": "My Customer Inc.", # optional (will populate from QuickBooks on first sync if blank)
+    "redirect_url": "https://your-app.com/qbd-setup/callback"
+})
+
+# 2. Build a request using the DSL
+request = RequestBuilder(version="16.0")
+with request as r:
+    with r.QBXML() as qbxml:
+        with qbxml.QBXMLMsgsRq(onError='stopOnError') as msgs:
+            with msgs.CustomerQueryRq(requestID='customer_123', iterator='Start') as query:
+                query.MaxReturned(50)
+                query.IncludeRetElement('ListID')
+                query.IncludeRetElement('Name')
+                query.IncludeRetElement('Email')
+
+# 3. Queue the request
+response = QubeSync.queue_request(connection['id'], {
+    'request_json': request.as_json(),
+    'webhook_url': 'https://your-app.com/webhooks/qb_response'
+})
+
+print(f"Request queued with ID: {response['id']}")
+```
+
+### API Client Reference
+
+#### Connection Management
+
+```python
+from qubesync import QubeSync
+
+# Create a new connection
+connection = QubeSync.create_connection({
+    "name": "My Customer Inc.", # optional (will populate from QuickBooks on first sync if blank)
+    "redirect_url": "https://your-app.com/qbd-setup/callback"
+})
+
+# Get connection details
+connection = QubeSync.get_connection(connection_id)
+
+# Delete a connection
+QubeSync.delete_connection(connection_id)
+
+# Generate QWC file for QuickBooks
+qwc_content = QubeSync.get_qwc(connection_id)
+
+# Generate password for QuickBooks connection
+password = QubeSync.generate_password(connection_id)
+```
+
+#### Request Management
+
+```python
+# Queue a request
+request_data = {
+    'request_json': {...},  # Built using RequestBuilder
+    'webhook_url': 'https://your-app.com/webhook'
+}
+response = QubeSync.queue_request(connection_id, request_data)
+
+# Get request status
+request = QubeSync.get_request(request_id)
+
+# Get all requests for a connection
+requests = QubeSync.get_requests(connection_id)
+
+# Delete a request
+QubeSync.delete_request(request_id)
+```
+
+#### Webhook Handling
+
+```python
+# Verify and parse webhook payload
+def handle_webhook(request):
+    signature = request.headers.get('X-Qube-Signature')
+    # The raw body, bytes or str, before anything parses it
+    body = request.body
+
+    try:
+        webhook_data = QubeSync.verify_and_build_webhook(body, signature)
+        # Process the verified webhook data in the background
+        # to ensure a quick response
+        print(f"Received response for request: {webhook_data['id']}")
+        return {"status": "success"}
+    except (StaleWebhookError, InvalidWebhookSignatureError) as e:
+        print(f"Webhook verification failed: {e}")
+        return {"status": "error"}, 401
+```
+
+The timestamp in `X-Qube-Signature` must be within 300 seconds (5 minutes) of now, either way,
+or `verify_and_build_webhook` raises `StaleWebhookError`. Pass `max_age` (in seconds) for
+another window. A bad, missing or malformed signature raises `InvalidWebhookSignatureError`.
+
+### RequestBuilder DSL
 
 The RequestBuilder provides an intuitive Python DSL for constructing QBXML requests that get converted to JSON format for the QubeSync API.
 
-### Context Manager Style (Recommended)
+#### Context Manager Style (Recommended)
 
 ```python
 from qubesync import RequestBuilder
@@ -258,7 +381,7 @@ with request as r:
 json_data = request.as_json()
 ```
 
-### Fluent Chaining Style
+#### Fluent Chaining Style
 
 ```python
 from qubesync import FluentRequestBuilder
@@ -277,7 +400,7 @@ request.QBXML().QBXMLMsgsRq(onError='stopOnError').ItemQueryRq(
 json_data = request.as_json()
 ```
 
-### Ruby-like Style
+#### Ruby-like Style
 
 ```python
 from qubesync import RequestBuilder
@@ -294,7 +417,7 @@ query.IncludeRetElement('CompanyName')
 json_data = request.as_json()
 ```
 
-### Handling Python Reserved Words
+#### Handling Python Reserved Words
 
 Use trailing underscores for Python reserved words:
 
@@ -308,7 +431,7 @@ with request as r:
                 query.MaxReturned(100)
 ```
 
-### Complex Nested Structures
+#### Complex Nested Structures
 
 ```python
 request = RequestBuilder(version="16.0")
@@ -331,7 +454,7 @@ with request as r:
                         line.Rate(150.00)
 ```
 
-## Example Output
+### Example Output
 
 The RequestBuilder generates clean JSON that the QubeSync API processes:
 
@@ -364,7 +487,7 @@ The RequestBuilder generates clean JSON that the QubeSync API processes:
 }
 ```
 
-## Error Handling
+### Error Handling
 
 ```python
 from qubesync import (
@@ -391,16 +514,16 @@ except InvalidWebhookSignatureError:
     print("Invalid webhook signature")
 ```
 
-## Available Classes
+### Available Classes
 
-### API Client
+#### API Client
 - `QubeSync` - Main API client for all QubeSync operations
 - `QubeSyncError` - Base exception class
 - `ConfigError` - Configuration/environment variable errors
 - `StaleWebhookError` - Webhook timestamp too old
 - `InvalidWebhookSignatureError` - Webhook signature verification failed
 
-### Request Building
+#### Request Building
 - `RequestBuilder` - Context manager style DSL (recommended)
 - `FluentRequestBuilder` - Method chaining style DSL
 - `RequestElement` - Individual request element (advanced usage)
