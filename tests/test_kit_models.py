@@ -316,6 +316,20 @@ class TestAdoption:
 
         assert row.adopt_qube_connection() is None
 
+    def test_adopts_a_simulated_one_though_it_has_connected(self, world, row, client):
+        # Connected from the moment it's made, but only the lost answer carried its setup link.
+        connected = iso(datetime.datetime.now(datetime.timezone.utc))
+        self.listing(client, self.made_for(row, type="simulated", last_connected_at=connected))
+
+        assert row.adopt_qube_connection() == "conn-q-lost"
+        assert world.reload(row).qube_id == "conn-q-lost"
+
+    def test_skips_a_standard_one_that_has_connected(self, row, client):
+        connected = iso(datetime.datetime.now(datetime.timezone.utc))
+        self.listing(client, self.made_for(row, type="standard", last_connected_at=connected))
+
+        assert row.adopt_qube_connection() is None
+
     def test_skips_one_whose_name_isnt_the_rows(self, row, client):
         self.listing(client, self.made_for(row, name="Another file"))
 

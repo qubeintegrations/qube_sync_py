@@ -145,7 +145,7 @@ class ConnectionMixin(object):
 
         It lists the app's connections (GET /api/v2/connections, which isn't paged) and
         adopts one only when exactly one has this row's webhook URL, has never connected
-        (last_connected_at is null), was made at or after this row (its created_at), and has
+        (last_connected_at is null) or is simulated, was made at or after this row (its created_at), and has
         the row's name when the row has one. So a row id used again (MySQL 5.7 after a restart,
         a restored database) never takes an old connection. A connection with no created_at (a
         server from before v2 sent it) is never adopted. The listing only runs for a row
@@ -306,13 +306,20 @@ class ConnectionMixin(object):
         # type: (Dict[str, Any]) -> bool
         return str(made.get("webhook_url") or "").rstrip("/") == self.webhook_url
 
+    # Nobody can have set it up: it has never connected, or it's simulated (connected from the
+    # moment it's made), and only the lost answer to the create carried its setup link.
+    @staticmethod
+    def _unclaimed(made):
+        # type: (Dict[str, Any]) -> bool
+        return made.get("last_connected_at") is None or made.get("type") == "simulated"
+
     def _made_for_this_row(self, made):
         # type: (Dict[str, Any]) -> bool
         if not made.get("id"):
             return False
         if not self._same_url(made):
             return False
-        if made.get("last_connected_at") is not None:
+        if not self._unclaimed(made):
             return False
         if self.name and made.get("name") != self.name:
             return False

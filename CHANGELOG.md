@@ -23,7 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     savepoint retry on a unique race), `qb_id_for(record, kind=)`, `find_linked(qb_id,
     kind=None)`, `quickbooks_record(qb_id, kind=None)`, `connected()`, `not_checking_in()`,
     `webhook_url`, `owner`, and `adopt_qube_connection()` for a create whose id was never
-    saved. QuickBooks ids are unique per list family (`family_for`).
+    saved (QuBe Sync's one connection with the row's webhook URL and name, made since the row,
+    never connected (or simulated)). QuickBooks ids are unique per list family (`family_for`).
   - `Run`: `latest_for(record, operation)`, `retry_start()` (the same reference as the
     Idempotency-Key), `summary_text`, `error_message`, `error_detail`, `open_question`,
     `ended()`, `failed()`, `cancelled()`, `unconfirmed()`, `record`, `webhook_url`.
