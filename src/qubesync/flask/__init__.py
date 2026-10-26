@@ -54,6 +54,7 @@ from .. import kit
 from ..kit._job import enqueue_in_process
 
 __all__ = [
+    "redirect_back",
     "Operation",
     "ConnectionEvents",
     "Blueprints",
@@ -98,6 +99,16 @@ def _keep_error(message):
     except RuntimeError:
         return False
     return True
+
+
+def redirect_back(error=None):
+    # type: (Optional[str]) -> Any
+    """Back to the page the request came from (303), with error, if any, for the templates to
+    show once: for your own views, such as a start button's."""
+    referer = request.headers.get("Referer")
+    if error is None:
+        return _response(kit.Reply(303, location=kit.back(referer, request.host)))
+    return _response(kit.back_with_error(error, 422, referer, request.host))
 
 
 def take_error():

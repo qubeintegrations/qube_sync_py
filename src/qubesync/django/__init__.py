@@ -50,7 +50,14 @@ from ..kit import ERROR_KEY, ConnectionEvents, Operation
 from ..kit import question_context as _question_context
 from ..kit import run_status_context as _run_status_context
 
-__all__ = ["Operation", "ConnectionEvents", "question_context", "run_status_context", "take_error"]
+__all__ = [
+    "Operation",
+    "ConnectionEvents",
+    "question_context",
+    "run_status_context",
+    "take_error",
+    "redirect_back",
+]
 
 
 def question_context(record, operation, request=None):
@@ -94,3 +101,16 @@ def take_error(request):
     if session is None:
         return None
     return session.pop(ERROR_KEY, None)
+
+
+def redirect_back(request, error=None):
+    # type: (Any, Any) -> Any
+    """Back to the page the request came from (303), with error, if any, for the templates to
+    show once: for your own views, such as a start button's."""
+    from .. import kit
+    from .views import response
+
+    referer = request.headers.get("Referer")
+    if error is None:
+        return response(kit.Reply(303, location=kit.back(referer, request.get_host())), request)
+    return response(kit.back_with_error(error, 422, referer, request.get_host()), request)

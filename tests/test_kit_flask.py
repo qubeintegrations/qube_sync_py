@@ -160,3 +160,15 @@ def test_run_status_html_takes_a_connection(app, world, account):
         shown = qube_flask.run_status_html(invoice, "create_invoice", connection=connection)
 
     assert 'data-qube-sync-status="in_quickbooks"' in shown
+
+
+def test_redirect_back_goes_back_with_the_message_for_the_page(app):
+    flask_app = app[0].app
+    with flask_app.test_request_context("/start", method="POST", headers={"Referer": "/invoices/1"}):
+        response = qube_flask.redirect_back("Connect first.")
+        assert (response.status_code, response.location) == (303, "/invoices/1")
+        assert qube_flask.take_error() == "Connect first."
+    with flask_app.test_request_context("/start", method="POST", headers={"Referer": "https://elsewhere.example/x"}):
+        response = qube_flask.redirect_back()
+        assert (response.status_code, response.location) == (303, "/")
+        assert qube_flask.take_error() is None

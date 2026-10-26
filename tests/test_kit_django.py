@@ -238,3 +238,16 @@ def test_without_a_session_an_answer_that_cant_go_through_answers_as_text(app, w
     response = views.answer(request, str(run.id))
 
     assert (response.status_code, response.content.decode()) == (409, kit.CHANGED)
+
+
+def test_redirect_back_goes_back_with_the_message_for_the_page():
+    request = RequestFactory().post("/start", HTTP_REFERER="/invoices/1")
+    request.session = {}
+    response = qube_django.redirect_back(request, "Connect first.")
+    assert (response.status_code, response["Location"]) == (303, "/invoices/1")
+    assert qube_django.take_error(request) == "Connect first."
+
+    request = RequestFactory().post("/start", HTTP_REFERER="https://elsewhere.example/x")
+    request.session = {}
+    response = qube_django.redirect_back(request)
+    assert (response.status_code, response["Location"], request.session) == (303, "/", {})

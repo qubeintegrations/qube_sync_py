@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `redirect_back` in `qubesync.django`, `qubesync.flask` and `qubesync.fastapi`, and
+  `qubesync.kit.NETWORK_ERRORS`: for your own views, such as a start button's, to go back with
+  a message the page shows once.
 - `Client.create_connection(webhook_url=, name=None, type=None)`: `type="simulated"` makes a
   connection to a simulated QuickBooks company file, connected as it's made.
 - `Client.redeliver_run(connection_id, run_id)`: `POST .../workflow-runs/{run_id}/redeliver`, which

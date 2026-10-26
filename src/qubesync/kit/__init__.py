@@ -33,7 +33,7 @@ from ._errors import (
 )
 from ._job import perform, retry_delay, run
 from ._models import family_for
-from ._operation import Operation, without_nils
+from ._operation import NETWORK_ERRORS, Operation, without_nils
 from ._settings import Settings, configure, reset, settings
 from ._sync_status import SyncStatus
 from ._web import (
@@ -99,6 +99,7 @@ __all__ = [
     "CacheDedupe",
     # the routes' work
     "Reply",
+    "NETWORK_ERRORS",
     "receive",
     "connect",
     "onboarding",

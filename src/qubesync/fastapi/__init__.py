@@ -55,6 +55,7 @@ from starlette.concurrency import run_in_threadpool
 from .. import kit
 
 __all__ = [
+    "redirect_back",
     "Operation",
     "ConnectionEvents",
     "Routers",
@@ -128,6 +129,16 @@ def _keep_error(request, response, message):
         request.session[kit.ERROR_KEY] = message
         return
     response.set_cookie(kit.ERROR_KEY, quote(message), max_age=ERROR_COOKIE_SECONDS, path="/", samesite="lax")
+
+
+def redirect_back(request, error=None):
+    # type: (Request, Optional[str]) -> Response
+    """Back to the page the request came from (303), with error, if any, for the templates to
+    show once: for your own routes, such as a start button's."""
+    referer = request.headers.get("referer")
+    if error is None:
+        return _response(kit.Reply(303, location=kit.back(referer, _host(request))), request)
+    return _response(kit.back_with_error(error, 422, referer, _host(request)), request)
 
 
 def take_error(request):

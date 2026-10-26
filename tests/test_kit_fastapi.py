@@ -179,3 +179,23 @@ def test_without_a_session_the_message_is_a_short_cookie_the_page_clears(app, wo
     shown = http.get("/invoices/%s" % invoice.id, account=account).text
     assert shown.count('<p class="qube-error">This question has changed; reload.</p>') == 1
     assert 'document.cookie = "%s=; Max-Age=0; Path=/; SameSite=Lax"' % kit.ERROR_KEY in shown
+
+
+def test_redirect_back_goes_back_with_the_message_for_the_page():
+    made = FastAPI()
+
+    @made.post("/start")
+    def start(request: Request):
+        return qube_fastapi.redirect_back(request, "Connect first.")
+
+    @made.post("/fine")
+    def fine(request: Request):
+        return qube_fastapi.redirect_back(request)
+
+    http = TestClient(made)
+    response = http.post("/start", headers={"Referer": "/invoices/1"}, follow_redirects=False)
+    assert (response.status_code, response.headers["location"]) == (303, "/invoices/1")
+    assert "qubesync_error=" in response.headers["set-cookie"]
+    response = http.post("/fine", headers={"Referer": "https://elsewhere.example/x"}, follow_redirects=False)
+    assert (response.status_code, response.headers["location"]) == (303, "/")
+    assert "set-cookie" not in response.headers
