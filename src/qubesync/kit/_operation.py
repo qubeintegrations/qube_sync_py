@@ -2,7 +2,7 @@
 import json
 import logging
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 import requests
 
@@ -54,6 +54,18 @@ class Operation(object):
                                      edit_sequence=txn.get("edit_sequence"), name=txn.get("ref_number"))
 
         run = CreateInvoice.start(invoice, connection)
+
+    With your app's typed workflow starts (``qubesync workflows`` writes qube_workflows.py, see
+    qubesync.workflow_types), input can return what a branch's input builder returns, typed as
+    that branch's input, so a misspelled field fails the type check rather than the run:
+
+        from qube_workflows import AddTransactionInvoiceInput, add_transaction
+
+        class CreateInvoice(qubesync.kit.Operation):
+            ...
+
+            def input(self) -> AddTransactionInvoiceInput:
+                return add_transaction.invoice_input({"customer_ref": ..., "ref_number": self.record.number})
 
     Each run is a row in qube_runs (Run), written before the run starts, and its webhook URL is
     QUBE_WEBHOOK_URL/runs/<run id>, so the job hands each event back to the same class with the
@@ -210,8 +222,10 @@ class Operation(object):
         return self.run.connection
 
     def input(self):
-        # type: () -> Dict[str, Any]
-        """The run's input, from the record. Each operation says how."""
+        # type: () -> Mapping[str, Any]
+        """The run's input, from the record. Each operation says how: a dict, or what an input
+        builder of your typed workflow starts returns (``add_transaction.invoice_input(...)``,
+        typed ``AddTransactionInvoiceInput``), which is one. It's sent as JSON either way."""
         raise NotImplementedError("%s.input isn't written yet" % type(self).__name__)
 
     def handle(self, event):

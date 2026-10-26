@@ -89,6 +89,73 @@ Also `list_runs(connection_id, reference=None, state=None, outcome=None)` and
 `run_events(connection_id, run_id, after=None, limit=None)`, which returns the whole body
 (`{"data": [...], "next_after": ...}`) so you can page with `after=`.
 
+### Typed workflow starts
+
+`qubesync workflows` fetches your app's workflow input types (`GET /api/v2/workflows/types`) and
+writes them as a Python module you check in: a start method per workflow, and per branch of its
+input, whose operation bodies have the same TypedDicts and field docs as the operation methods
+below.
+
+```sh
+QUBE_API_KEY=... qubesync workflows            # qube_workflows.py (or python -m qubesync workflows)
+QUBE_API_KEY=... qubesync workflows --check    # in CI: exits 1 when the module is out of date
+```
+
+```python
+import qube_workflows
+
+qube_workflows.client = qube  # once, at boot
+
+qube_workflows.add_transaction.invoice(
+    connection_id,
+    {
+        "customer_ref": {"list_id": "80000001-1700000000"},
+        "invoice_line_add": [{"item_ref": {"full_name": "Consulting"}, "amount": 100.0}],
+    },
+    adds=[{"kind": "customer", "add": {"name": "Acme Ltd"}}],
+    reference="invoice-%s" % invoice.id,
+    webhook_url="https://your-app.com/webhooks/qube",
+)
+
+# The input alone, for start or a qubesync.kit Operation's input:
+qube_workflows.add_transaction.invoice_input(params, adds=adds)
+```
+
+- A workflow whose input has branches (add_transaction's `operation`, upsert's `kind`) gets one
+  method per branch, named by the branch, and an input builder, `<branch>_input`: the
+  discriminator is filled in and the inputs are keyword-only (required ones without defaults),
+  except a workflow's one operation body (add_transaction's `params`), which every branch takes
+  positionally; a workflow with two (upsert's `add` and `update`) takes both as keywords.
+  `start(connection_id, input, ...)` takes any branch's input. A workflow without branches gets
+  `start(connection_id, *, <inputs>, reference=, webhook_url=)` and `input(...)`. Each builder
+  leaves out None values. `connection_id` may be anything with a `qube_id` (a qubesync.kit
+  Connection). A name that's a Python keyword or a start's own takes a trailing underscore:
+  upsert's `class` input is `class_=`, a `version` input `version_=`, a workflow or branch named
+  `class` is `class_` (its builder `class_input`).
+- Each start takes `reference=`, `webhook_url=`, `version=None` and `client=` (the module's
+  `client` unless given), and returns the run as `start_run` does.
+- Each input is a TypedDict: `AddTransactionInvoiceInput` for a branch's (`<Workflow><Branch>Input`),
+  `AddTransactionInput` for any of the workflow's (`<Workflow>Input`, the union of its branches, or
+  its one shape). An operation body is that operation's params TypedDict
+  (`qubesync.operations.invoice.InvoiceCreateParams`) and a nested entry with branches (an `adds`
+  item) a union of a TypedDict per branch. An operation newer than your qubesync is a plain
+  `Dict[str, Any]`, with a warning when the served operations aren't the library's
+  (`qubesync.operations.DIGEST`). A field the workflow sets itself (QuBe Sync lists them as
+  `set_by_workflow`: upsert's `list_id` and `edit_sequence`) is optional in that body, which then
+  gets a TypedDict of its own (`RecordPaymentPaymentBody`, `UpsertCustomerUpdateBody`), and its
+  docs say a value given for it is overwritten. The module imports only qubesync and `typing`,
+  runs on Python 3.8, and passes `mypy --strict`.
+- QuBe Sync still checks every start: a field the operation doesn't take is a 422 at the call, its
+  error's `path` the body (`input.params`) and its `message` naming the field (`unknown parameter:
+  "customer_rf"`).
+- `--drafts` types each workflow's draft where it has one, so you can build against a workflow
+  before publishing it. The header records the digest and the flag, and `--check` fetches with the
+  same flag. When QuBe Sync can't be reached or answers 5xx, `--check` warns and exits 0; a 401
+  exits 1.
+- `--output PATH` chooses the module; `QUBE_BASE_URL` another host (with or without `/api/v2`).
+- In the integration kit, an operation's `input` can return a builder's input, typed as it
+  (`def input(self) -> AddTransactionInvoiceInput`).
+
 ### Queueing an operation
 
 Every QuickBooks operation is a method on its entity: `qube.<entity>.<action>(connection_id, params, webhook_url=...)`,

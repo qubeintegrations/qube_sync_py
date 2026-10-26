@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Typed workflow starts: `qubesync workflows [--drafts] [--check] [--output qube_workflows.py]`
+  (a console script, and `python -m qubesync workflows`) fetches your app's workflow input types
+  with `QUBE_API_KEY` (from `QUBE_BASE_URL`, with or without `/api/v2`) and writes one module to
+  check in: per workflow a namespace (`add_transaction`) with a start method and an input builder
+  per branch of its input (`invoice`, `invoice_input`), or `start` and `input`, and a TypedDict
+  per input (`AddTransactionInvoiceInput`, `AddTransactionInput`) whose operation bodies are the
+  operations' params TypedDicts. A field the workflow sets itself (`set_by_workflow`) is optional
+  in that body's own TypedDict. `--check` sends the module's digest as `If-None-Match` and exits 1
+  when it's out of date (naming the workflows that changed), on a 401 or without a header, and 0
+  with a warning when QuBe Sync can't be reached. The renderer is `qubesync.workflow_types`.
+- `Client.workflow_types(include_drafts=False, etag=None)`: GET /workflows/types, returning
+  `qubesync.v2.NOT_MODIFIED` on a 304.
+- `qubesync.operations.DIGEST`, the sha256 of the operations manifest the library was generated
+  from, compared with a workflow types document's `operations_digest`; and
+  `qubesync.operations._fields`, each operation's params fields, for the renderer only.
+
+### Changed
+- `qubesync.kit.Operation.input` is typed as returning a `Mapping[str, Any]` (was a `Dict`), so
+  an override can return a generated input TypedDict. Its behaviour is unchanged.
+
 ## [0.4.0] - 2026-10-25
 
 ### Added
