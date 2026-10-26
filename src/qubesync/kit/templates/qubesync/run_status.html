@@ -1,18 +1,28 @@
-{#- Where a record's latest run of an operation stands, in a sentence, and what went wrong
-    when it failed, or nothing when the record has no runs of it. A start QuBe Sync hasn't
-    confirmed for a minute gets a "Try the start again" button, which resends it with the same
-    reference. Render it on the record's page with qube_run_status(invoice, "create_invoice")
-    (qubesync.flask's Jinja global; qubesync.fastapi's takes the request first), or include it
-    with run_status_context(...) in the page's context. It reads the run row the kit keeps
-    (Run.summary_text, Run.error_detail). Everything is escaped, and the qube- classes are for
-    your CSS. A csrf_token in the context goes in the retry form. For other markup, put your
-    own at templates/qubesync/run_status.html in your app. -#}
+{#- Where a record stands with QuickBooks for an operation (its SyncStatus), in a sentence, with
+    a failure's detail and the buttons that apply: "Try the start again" for an unconfirmed
+    start, "Send its latest news again" for a run that looks stuck. Nothing before it's sent.
+    Render it with qube_run_status(invoice, "create_invoice") (qubesync.fastapi's takes the
+    request first; connection= for one company file), or include it with run_status_context(...).
+    Everything is escaped; the qube- classes are for your CSS, and a csrf_token in the context
+    goes in each form. For other markup, put your own at templates/qubesync/run_status.html. -#}
 {% autoescape true %}
-{% if run %}
-<div class="qube-run-status qube-run-{{ state }}">
+{% include "qubesync/_error.html" %}
+{% if sync and sync.status != "not_sent" %}
+<div class="qube-run-status qube-sync-{{ sync.status }}{% if state %} qube-run-{{ state }}{% endif %}"
+     data-qube-sync-status="{{ sync.status }}">
   <p class="qube-run-summary">{{ summary }}</p>
   {% if detail %}
   <p class="qube-run-error-detail">{{ detail }}</p>
+  {% endif %}
+  {% if redeliver_action %}
+  <p class="qube-run-quiet">No news from QuBe Sync about it for a while.</p>
+  <form class="qube-redeliver-form" method="post" action="{{ redeliver_action }}">
+    {% if csrf_token is defined and csrf_token %}
+    <input type="hidden" name="csrf_token"
+           value="{{ csrf_token() if csrf_token is callable else csrf_token }}">
+    {% endif %}
+    <button type="submit" class="qube-redeliver">Send its latest news again</button>
+  </form>
   {% endif %}
   {% if retry_action %}
   <form class="qube-retry-start-form" method="post" action="{{ retry_action }}">

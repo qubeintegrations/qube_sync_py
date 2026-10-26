@@ -13,6 +13,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Client.redeliver_run(connection_id, run_id)`: `POST .../workflow-runs/{run_id}/redeliver`, which
   has QuBe Sync send the run's latest event again; returns `{run_id, event, revision,
   webhook_url}`, raises `APIError` 409 (`nothing_to_redeliver`) or 429. Not retried.
+- Kit: Connect with `simulated=1`, outside production, makes a new connection to a simulated
+  QuickBooks company file on the account's own row and redirects back; in production it answers
+  404. The `production` setting says which, defaulting to the adapter's guess (Django `not DEBUG`,
+  Flask `not (debug or testing)`, FastAPI `not app.debug`) and `True` elsewhere.
+- Kit: sync status, derived and never stored: `connection.sync_status(record, operation)` returns
+  a `qubesync.kit.SyncStatus` (`status`: `not_sent`, `sending`, `needs_answer`, `in_quickbooks`,
+  `done`, `failed` or `cancelled`; `qb_id`, `error`, `retry`, `unconfirmed`, `summary_text`, `run`,
+  `link`), `SyncStatus.latest(record, operation)` on the latest run's connection, and the
+  connection's `in_quickbooks(query)`, `not_in_quickbooks(query)`, `needing_answer(query,
+  operation)` and `sending(query, operation)`, each one `EXISTS` query. Indexes for them: Django's
+  migration `0002_sync_status_indexes`; with SQLAlchemy, autogenerate an Alembic revision.
+- Kit: `run.looks_stuck()` (confirmed, not ended, quiet for 10 minutes while running or waiting on
+  a question it never received), `POST qube/runs/<id>/redeliver` (`qubesync.kit.redeliver`; Django
+  `qubesync:redeliver`, Flask `qubesync_questions.redeliver`, FastAPI `qubesync_redeliver`) and
+  the run status template's "Send its latest news again" button.
+- Kit: `Reply.error` and `Reply.fallback`, `qubesync.kit.back_with_error`, and `take_error` in each
+  adapter: an answer, start retry or redelivery that can't go through goes back to the page with
+  why, which the templates show once (`.qube-error`).
+
 - `qubesync.kit.MissingReference`, which the kit's mapped operations raise from `input` when a
   reference QuickBooks requires has no link and no name, so the start fails before anything is sent.
 - Typed workflow starts: `qubesync workflows [--drafts] [--check] [--output qube_workflows.py]`
@@ -32,6 +51,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `qubesync.operations._fields`, each operation's params fields, for the renderer only.
 
 ### Changed
+- Kit: `Operation.start` returns the record's run that hasn't ended on that connection
+  (`run.reused` is `True`), sending its start again with the same reference and stored input when
+  it's unconfirmed, rather than starting another; the check and the new row, with its input, are
+  made under a lock on the connection's row. An input that raises leaves the new row `failed`; a
+  409 (the idempotency key in use by the other click) leaves the run `starting`.
+- Kit: the answer route's 409 and 422, and the start retry's 409, are now 303s back to the page
+  with the message (`.qube-error`); without a session (Flask with no `SECRET_KEY`, Django without
+  sessions) they answer as before.
+- Kit: the run status template reads the sync status (`qube-sync-<status>`,
+  `data-qube-sync-status`) and takes `connection` (Django's tag `connection=`, Flask's
+  `run_status_html(record, operation, connection=None)`, FastAPI's `run_status_html(request,
+  record, operation, connection=None)`). It shows a linked record with no run, on that connection,
+  as "In QuickBooks".
+- Kit: a refused webhook's log line names its path and what to check (the webhook secret and
+  `qube env --write .env`, the clock, or a sender that isn't QuBe Sync).
+- Kit: `qubesync.kit.receive` takes `path=`, `connect` takes `referer=`, `host=` and `production=`,
+  and `run_status_context` takes `redeliver_action_for=`, `connection=` and `error=`;
+  `question_context` takes `error=`.
 - `qubesync.kit.Operation.input` is typed as returning a `Mapping[str, Any]` (was a `Dict`), so
   an override can return a generated input TypedDict. Its behaviour is unchanged.
 

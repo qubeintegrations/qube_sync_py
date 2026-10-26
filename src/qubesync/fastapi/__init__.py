@@ -28,6 +28,11 @@ The routes, relative to where they're included (each named, for request.url_for)
     POST /qube/questions/runs/{id}                 qubesync_question (reads a form: python-multipart)
     GET  /qube/questions/runs/{id}/search          qubesync_question_search
     POST /qube/runs/{id}/retry_start               qubesync_retry_start
+    POST /qube/runs/{id}/redeliver                 qubesync_redeliver
+
+A message from a question or run route (why it didn't go through) goes back to the page in
+request.session with Starlette's SessionMiddleware, else in a short-lived qubesync_error cookie
+that the template's script clears once it's shown.
 
 The database and the calls to QuBe Sync block, so they run on a worker thread, which removes
 its scoped session when the route is done.
@@ -40,7 +45,7 @@ except ImportError as error:  # pragma: no cover
 import os
 from collections import namedtuple
 from typing import Any, Dict, Optional, Sequence
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
@@ -60,6 +65,7 @@ __all__ = [
     "question_html",
     "run_status_html",
     "add_templates",
+    "take_error",
     "TEMPLATES",
 ]
 
@@ -73,10 +79,17 @@ TEMPLATES = os.path.join(os.path.dirname(os.path.abspath(kit.__file__)), "templa
 Routers = namedtuple("Routers", ["webhooks", "connections", "questions"])
 
 
-def _response(reply):
-    # type: (kit.Reply) -> Response
+# How long the error cookie lasts if no page shows it.
+ERROR_COOKIE_SECONDS = 60
+
+
+def _response(reply, request=None):
+    # type: (kit.Reply, Optional[Request]) -> Response
     if reply.location is not None:
-        return RedirectResponse(reply.location, status_code=reply.status)
+        redirect = RedirectResponse(reply.location, status_code=reply.status)
+        if reply.error is not None:
+            _keep_error(request, redirect, reply.error)
+        return redirect
     if reply.json is not None:
         return JSONResponse(reply.json, status_code=reply.status)
     if reply.text is not None:
@@ -102,6 +115,39 @@ async def _raw_body(request):
             return None
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+def _has_session(request):
+    # type: (Optional[Request]) -> bool
+    return request is not None and "session" in request.scope
+
+
+def _keep_error(request, response, message):
+    # type: (Optional[Request], Response, str) -> None
+    if _has_session(request):
+        request.session[kit.ERROR_KEY] = message
+        return
+    response.set_cookie(kit.ERROR_KEY, quote(message), max_age=ERROR_COOKIE_SECONDS, path="/", samesite="lax")
+
+
+def take_error(request):
+    # type: (Request) -> Dict[str, Any]
+    """The message a question or run route left (session or cookie), as the templates' error and
+    clear_cookie, once per page."""
+    if getattr(request.state, "qubesync_error_taken", False):
+        return {"error": None}
+    request.state.qubesync_error_taken = True
+    if _has_session(request):
+        return {"error": request.session.pop(kit.ERROR_KEY, None)}
+    message = request.cookies.get(kit.ERROR_KEY)
+    if not message:
+        return {"error": None}
+    return {"error": unquote(message), "clear_cookie": kit.ERROR_KEY}
+
+
+def _production(request):
+    # type: (Request) -> bool
+    return not getattr(request.app, "debug", False)
 
 
 def _host(request):
@@ -142,20 +188,24 @@ def routers():
     async def run_webhook(id: str, request: Request) -> Response:
         body = await _raw_body(request)  # the raw bytes the signature is over
         signature = request.headers.get(kit.SIGNATURE_HEADER)
-        return _response(await run_in_threadpool(_unit, kit.receive, "run", id, body, signature))
+        reply = await run_in_threadpool(_unit, kit.receive, "run", id, body, signature, None, request.url.path)
+        return _response(reply)
 
     @webhooks.post("/webhooks/qube/connections/{id}", name="qubesync_connection_webhook")
     async def connection_webhook(id: str, request: Request) -> Response:
         body = await _raw_body(request)
         signature = request.headers.get(kit.SIGNATURE_HEADER)
-        return _response(await run_in_threadpool(_unit, kit.receive, "connection", id, body, signature))
+        reply = await run_in_threadpool(_unit, kit.receive, "connection", id, body, signature, None, request.url.path)
+        return _response(reply)
 
     connections = APIRouter()
 
     @connections.post("/quickbooks/connections", name="qubesync_connections")
     async def connect(request: Request) -> Response:
         form = await request.form()
-        return _response(await run_in_threadpool(_unit, kit.connect, request, form))
+        referer = request.headers.get("referer")
+        reply = await run_in_threadpool(_unit, kit.connect, request, form, referer, _host(request), _production(request))
+        return _response(reply)
 
     @connections.post("/quickbooks/connections/{id}/onboarding", name="qubesync_connection_onboarding")
     def onboarding(id: str, request: Request) -> Response:
@@ -167,7 +217,8 @@ def routers():
     async def answer(id: str, request: Request) -> Response:
         form = await request.form()
         referer = request.headers.get("referer")
-        return _response(await run_in_threadpool(_unit, kit.answer, request, id, form, referer, _host(request)))
+        reply = await run_in_threadpool(_unit, kit.answer, request, id, form, referer, _host(request))
+        return _response(reply, request)
 
     @questions.get("/qube/questions/runs/{id}/search", name="qubesync_question_search")
     def search(id: str, request: Request) -> Response:
@@ -175,7 +226,11 @@ def routers():
 
     @questions.post("/qube/runs/{id}/retry_start", name="qubesync_retry_start")
     def retry_start(id: str, request: Request) -> Response:
-        return _response(_unit(kit.retry_start, request, id, request.headers.get("referer"), _host(request)))
+        return _response(_unit(kit.retry_start, request, id, request.headers.get("referer"), _host(request)), request)
+
+    @questions.post("/qube/runs/{id}/redeliver", name="qubesync_redeliver")
+    def redeliver(id: str, request: Request) -> Response:
+        return _response(_unit(kit.redeliver, request, id, request.headers.get("referer"), _host(request)), request)
 
     return Routers(webhooks, connections, questions)
 
@@ -199,15 +254,32 @@ def _path(request, name, run):
 def question_context(request, record, operation):
     # type: (Request, Any, str) -> Dict[str, Any]
     """What qubesync/question.html reads, for the record's page: the open question of record's
-    latest run of operation (a slug), if it's asking, and where it's answered."""
-    return kit.question_context(record, operation, lambda run: _path(request, "qubesync_question", run))
+    latest run of operation (a slug), if it's asking, where it's answered, and the message a
+    route left (take_error)."""
+    shown = take_error(request)
+    values = kit.question_context(
+        record, operation, lambda run: _path(request, "qubesync_question", run), error=shown["error"]
+    )
+    values["clear_cookie"] = shown.get("clear_cookie")
+    return values
 
 
-def run_status_context(request, record, operation):
-    # type: (Request, Any, str) -> Dict[str, Any]
-    """What qubesync/run_status.html reads: record's latest run of operation, its summary, a
-    failure's detail, and where an unconfirmed start is sent again."""
-    return kit.run_status_context(record, operation, lambda run: _path(request, "qubesync_retry_start", run))
+def run_status_context(request, record, operation, connection=None):
+    # type: (Request, Any, str, Any) -> Dict[str, Any]
+    """What qubesync/run_status.html reads: record's sync status for operation (on connection,
+    else on its latest run's), with the retry and redelivery routes when they apply, and the
+    message a route left (take_error)."""
+    shown = take_error(request)
+    values = kit.run_status_context(
+        record,
+        operation,
+        lambda run: _path(request, "qubesync_retry_start", run),
+        lambda run: _path(request, "qubesync_redeliver", run),
+        connection=connection,
+        error=shown["error"],
+    )
+    values["clear_cookie"] = shown.get("clear_cookie")
+    return values
 
 
 def add_templates(templates):
@@ -225,8 +297,8 @@ def add_templates(templates):
         qube_question=lambda request, record, operation, **context: question_html(
             request, record, operation, templates=env, **context
         ),
-        qube_run_status=lambda request, record, operation, **context: run_status_html(
-            request, record, operation, templates=env, **context
+        qube_run_status=lambda request, record, operation, connection=None, **context: run_status_html(
+            request, record, operation, connection=connection, templates=env, **context
         ),
     )
     return templates
@@ -258,8 +330,8 @@ def question_html(request, record, operation, templates=None, **context):
     return _render(templates, "qubesync/question.html", values)
 
 
-def run_status_html(request, record, operation, templates=None, **context):
-    # type: (Request, Any, str, Any, **Any) -> Markup
+def run_status_html(request, record, operation, connection=None, templates=None, **context):
+    # type: (Request, Any, str, Any, Any, **Any) -> Markup
     """qubesync/run_status.html rendered for record. context adds to it (csrf_token)."""
-    values = dict(run_status_context(request, record, operation), request=request, **context)
+    values = dict(run_status_context(request, record, operation, connection), request=request, **context)
     return _render(templates, "qubesync/run_status.html", values)

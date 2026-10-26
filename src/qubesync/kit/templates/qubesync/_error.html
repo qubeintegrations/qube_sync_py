@@ -1,0 +1,10 @@
+{#- Why the last answer, start retry or redelivery didn't go through, once. With clear_cookie
+    (qubesync.fastapi without sessions), the browser forgets the message once it's shown. -#}
+{% if error %}
+<p class="qube-error">{{ error }}</p>
+{% if clear_cookie %}
+<script{% if csp_nonce is defined %} nonce="{{ csp_nonce }}"{% endif %}>
+document.cookie = "{{ clear_cookie }}=; Max-Age=0; Path=/; SameSite=Lax";
+</script>
+{% endif %}
+{% endif %}

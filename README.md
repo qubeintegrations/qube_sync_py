@@ -378,8 +378,9 @@ the [qube_rails](https://rubygems.org/gems/qube_rails) engine:
   through QuBe Sync's setup;
 - the webhook endpoints (verify the signature, find the row, enqueue) and their job (check the
   event is that run's or that connection's, apply it, call your handler);
-- the question routes (answer by choice, search a record field), the start retry, and the
-  question and run status templates;
+- the question routes (answer by choice, search a record field), the start retry, the
+  redelivery of a stuck run's latest event, and the question and run status templates;
+- each record's sync status with QuickBooks, derived from those tables, and list-page filters;
 - `Operation` and `ConnectionEvents`, the bases of your classes.
 
 It ships in this package, so `pip install -U qubesync` updates it, and your app keeps only its
@@ -450,6 +451,7 @@ qubesync.kit.configure(
 | `webhook_secret` | a secret, or a list while one rotates | `QUBE_WEBHOOK_SECRET` |
 | `webhook_url` | the base of every webhook URL | `QUBE_WEBHOOK_URL` |
 | `client` | a `qubesync.Client` to use instead of the one made from `api_key` and `base_url` (tests) | |
+| `production` | `True` where Connect must refuse `simulated=1` (404) | the adapter's guess: Django `not DEBUG`, Flask `not (app.debug or app.testing)`, FastAPI `not app.debug`; `True` elsewhere |
 
 A setting your app hasn't written raises `qubesync.kit.NotConfigured`, naming that file, the
 first time it's needed, so nothing silently passes. The environment is read at first use.
@@ -521,18 +523,25 @@ Relative to where your app mounts them:
 
 | Route | What it does |
 | --- | --- |
-| `POST quickbooks/connections` | Connect, for the signed-in account (`current_account`). Sends its newest connection that has never connected (`pending` or `setup_cancelled`) back through setup, so clicking Connect again doesn't pile up connections. Makes a new one (the row, then QuBe Sync's connection with the row's webhook URL, then its `qube_id`, with an optional `name`) when the account has none, or with `new=1`. Redirects (303) to the setup. |
+| `POST quickbooks/connections` | Connect, for the signed-in account (`current_account`). Sends its newest connection that has never connected (`pending` or `setup_cancelled`) back through setup, so clicking Connect again doesn't pile up connections. Makes a new one (the row, then QuBe Sync's connection with the row's webhook URL, then its `qube_id`, with an optional `name`) when the account has none, or with `new=1`. Redirects (303) to the setup. With `simulated=1`, outside production (the `production` setting), it makes a new connection to a simulated QuickBooks company file instead (`create_connection(type="simulated")`, connected as it's made), and redirects (303) back to the page: for testing with no Windows computer. In production that answers 404. |
 | `POST quickbooks/connections/<id>/onboarding` | One of the signed-in account's connections, back through setup, with its webhook URL brought up to date (or made at QuBe Sync, for a row QuBe Sync never answered). Another account's connection answers 404. |
 | `POST webhooks/qube/runs/<id>` | A run's webhooks. |
 | `POST webhooks/qube/connections/<id>` | A connection's webhooks. |
-| `POST qube/questions/runs/<id>` | Your user's answer to the run's question, from the template: 303 back to the page; 409 when the question has changed (a 409, or any 400, from QuBe Sync: it's forgotten); 422 with QuBe Sync's words for a field it couldn't take. Behind your sign-in and CSRF. |
+| `POST qube/questions/runs/<id>` | Your user's answer to the run's question, from the template: 303 back to the page, with a message when it didn't go through (the question has changed: a 409, or any 400, from QuBe Sync, and it's forgotten; or QuBe Sync's words for a field it couldn't take, a 422). Behind your sign-in and CSRF. |
 | `GET qube/questions/runs/<id>/search` | A record field's matches, as JSON (`q` of 2 to 100 characters and a `field`, else `[]`). Behind your sign-in. |
-| `POST qube/runs/<id>/retry_start` | A start QuBe Sync never confirmed, sent again with the same reference, from the run status template: 303 back, 409 for a run that isn't `starting`. Behind your sign-in and CSRF, and `authorize_question`. |
+| `POST qube/runs/<id>/retry_start` | A start QuBe Sync never confirmed, sent again with the same reference, from the run status template: 303 back, with a message for a run that isn't `starting`. Behind your sign-in and CSRF, and `authorize_question`. |
+| `POST qube/runs/<id>/redeliver` | A run that looks stuck (`run.looks_stuck()`: confirmed, not ended, and quiet for 10 minutes while running or waiting on a question this app never got): asks QuBe Sync to send its latest event again (`redeliver_run`), from the run status template's "Send its latest news again" button. 303 back, with a message when QuBe Sync has nothing to send yet (409), was asked a moment ago (429) or didn't answer, or the run isn't quiet. Behind your sign-in and CSRF, and `authorize_question`. |
 
-The webhook routes verify the signature (401 if it doesn't check out, logging only the reason),
-answer 404 when the row isn't there, enqueue, and answer 200. No sign-in, no CSRF, the raw
+The webhook routes verify the signature (401 if it doesn't check out), answer 404 when the row
+isn't there, enqueue, and answer 200. No sign-in, no CSRF, the raw
 body, any content type, up to 5 MB (413 beyond, unread). Each id in a URL is only a pointer: the
 job checks the signed event's reference and connection id against the row.
+
+A refused webhook is logged with its reason, its path and what to check, never the secret, the
+signature or the body: `mismatch` (it isn't signed with `QUBE_WEBHOOK_SECRET`: set that to the
+app's webhook secret, which `qube env --write .env` writes, and restart; QuBe Sync sends it
+again), `stale` (its time is over 5 minutes from this server's clock), `missing` or `malformed`
+(no valid `X-Qube-Signature`: not from QuBe Sync).
 
 Two buttons cover onboarding: Connect, for an account setting up its first company file (or
 finishing a setup it started), and, once it has one, Connect another company file:
@@ -542,6 +551,10 @@ finishing a setup it started), and, once it has one, Connect another company fil
 <form method="post" action="/quickbooks/connections">{% csrf_token %}
   <input type="hidden" name="new" value="1"><input type="hidden" name="name" value="Second file">
   <button>Connect another company file</button>
+</form>
+<!-- Outside production only: -->
+<form method="post" action="/quickbooks/connections">{% csrf_token %}
+  <input type="hidden" name="simulated" value="1"><button>Connect a simulated QuickBooks (for testing)</button>
 </form>
 ```
 
@@ -688,15 +701,26 @@ run = CreateInvoice.start(invoice, connection)
 ```
 
 `start` takes a connection QuBe Sync has made (it raises `qubesync.kit.NotConnected` for one with
-no `qube_id`). It writes the run's row first, with a new reference and state `starting`, since a
-webhook can come before it returns; starts the run with that reference as the idempotency key and
-`QUBE_WEBHOOK_URL/runs/<run id>` as its webhook URL; keeps QuBe Sync's `qube_run_id`, `state`,
-`run_url` and `cancel_url`; and returns the row. The row keeps the input it sent.
+no `qube_id`). It writes the run's row first, with a new reference, its input and state
+`starting`, since a webhook can come before it returns; starts the run with that reference as the
+idempotency key and `QUBE_WEBHOOK_URL/runs/<run id>` as its webhook URL; keeps QuBe Sync's
+`qube_run_id`, `state`, `run_url` and `cancel_url`; and returns the row.
+
+One run at a time per record, operation and connection: while the record's latest run of that
+operation on that connection hasn't ended, `start` starts nothing new and returns that run
+(`run.reused` is `True`), first sending its start again, with the same reference and stored
+input, when QuBe Sync hasn't confirmed it (no `qube_run_id`, still `starting`). The reference is
+the idempotency key, so a double click gets the same run back from QuBe Sync, never a second
+invoice. A new reference is made only once the last run has ended. The check and the new row
+(its input worked out before it's written) happen under a lock on the connection's row
+(`SELECT ... FOR UPDATE`), so two starts at once find the same row.
 
 A start can fail two ways, and they're handled differently:
 
 - **Refused** (QuBe Sync answered 4xx: bad input, a workflow that isn't published) or an input
   that raised: nothing was started. The row is marked `failed` and the error raised; start again.
+  A 409 is the exception: the idempotency key is in use by another call still in flight (the
+  other click of a double click), whose start may land, so the row stays `starting`.
 - **No answer** (a timeout, a 5xx, a dropped connection): the run may have started. The row stays
   `starting`, with its reference and input, and the error is raised. Send it again with
   `run.retry_start()` (or `CreateInvoice.retry_start(run)`), never with a new `start`: a new
@@ -729,29 +753,86 @@ A start QuBe Sync hasn't confirmed for a minute (`run.unconfirmed()`) reads "Not
 QuBe Sync yet", and the template offers a "Try the start again" button, posting to
 `qube/runs/<id>/retry_start`.
 
-Show the latest run's status, and its question, on the record's page:
+A run QuBe Sync confirmed that has had no news for 10 minutes, running or waiting on a question
+this app never received (`run.looks_stuck()`), may have lost a webhook (the app was down longer
+than QuBe Sync's retries). The template then says "No news from QuBe Sync about it for a while."
+(`.qube-run-quiet`) and offers "Send its latest news again" (`.qube-redeliver`), posting to
+`qube/runs/<id>/redeliver`, which asks QuBe Sync to send the run's latest event again; it comes
+back through the webhook route, and one already applied is skipped by its revision.
+
+Show the record's status, and its question, on its page:
 
 ```django
 {% load qubesync %}
 {% qube_run_status invoice "create_invoice" %}
+{% qube_run_status invoice "create_invoice" connection=connection %}   {# one company file #}
 {% qube_question invoice "create_invoice" %}
 ```
 
 ```jinja
-{{ qube_run_status(invoice, "create_invoice") }}     {# Flask #}
+{{ qube_run_status(invoice, "create_invoice") }}     {# Flask; connection=... too #}
 {{ qube_question(invoice, "create_invoice") }}
 {{ qube_run_status(request, invoice, "create_invoice") }}   {# FastAPI, after add_templates #}
 ```
 
-The status shows the summary (`.qube-run-summary`, inside `.qube-run-status.qube-run-<state>`)
-and, for a failure, the error's detail (`.qube-run-error-detail`), and nothing for a record with
-no runs. The question shows the open question of that record's latest run of that operation,
+The status reads the record's [sync status](#sync-status) on `connection`, else on the connection
+its latest run went out on, and shows its summary (`.qube-run-summary`, inside
+`.qube-run-status.qube-sync-<status>.qube-run-<state>`, with `data-qube-sync-status`) and, for a
+failure, the error's detail (`.qube-run-error-detail`); nothing before it's sent.
+
+An answer, a start retry or a redelivery that can't go through goes back to the page with why,
+which whichever template comes first shows once (`.qube-error`): Django keeps it in the session,
+Flask in its session (so it needs a `SECRET_KEY`; without one the route answers the message as
+text with its status, 409 or 422), and FastAPI in `request.session` with Starlette's
+`SessionMiddleware`, else in a `qubesync_error` cookie that lasts 60 seconds and that the
+template's script clears once it's shown. The question shows the open question of that record's latest run of that operation,
 and nothing when that run isn't asking. Each choice is a form posting to the run's question
 route with your CSRF token (Django's; Flask-WTF's `csrf_token()`; a `csrf_token` you pass
 FastAPI's), and a record field's box searches through your app, so the API key never reaches
 the browser. For other markup, put your own `qubesync/question.html` or
 `qubesync/run_status.html` where your templates are found first. `question_context` and
 `run_status_context` in each adapter give their context for an `{% include %}`.
+
+### Sync status
+
+Where one of your records stands with QuickBooks, per connection and operation, worked out from
+the kit's own rows (the record's runs, its link in `qube_quickbooks_records`) and never stored, so
+your tables need no status column:
+
+```python
+status = connection.sync_status(invoice, "create_invoice")   # a qubesync.kit.SyncStatus
+status.status        # "not_sent", "sending", "needs_answer", "in_quickbooks", "done", "failed" or "cancelled"
+status.qb_id         # its QuickBooks id on this connection, when it's linked
+status.error         # a failed run's error
+status.retry         # whether starting again makes sense (failed or cancelled, and not linked)
+status.unconfirmed   # a start QuBe Sync hasn't confirmed: run.retry_start()
+status.summary_text  # "In QuickBooks", "Waiting for your answer", "Failed: ...", or None
+status.run, status.link
+```
+
+Per connection, since an invoice can be in one company file and not another.
+`qubesync.kit.SyncStatus.latest(invoice, "create_invoice")` reads it on the connection the latest
+run went out on, for a page that doesn't say which (`not_sent` with no run).
+
+When the run and the link disagree, the newest word wins:
+1. a latest run that hasn't ended: `sending` (an unconfirmed start too) or `needs_answer`;
+2. a latest run that failed or was cancelled after the link was made, or with no link:
+   `failed` or `cancelled`;
+3. a link: `in_quickbooks`, always with its `qb_id`;
+4. a latest run that completed and linked nothing (an operation that doesn't link its record):
+   `done`, which a new start may follow;
+5. otherwise `not_sent`.
+
+For list pages and filters, the connection narrows a model of yours, or your ORM's query of one
+(a Django `QuerySet`; a SQLAlchemy `Query` or `select()`), in one query each: an `EXISTS` on the
+kit's tables, by your primary key as text, on indexes the kit's migrations add.
+
+```python
+connection.not_in_quickbooks(Invoice.objects.filter(account=account))
+connection.in_quickbooks(Invoice)
+connection.needing_answer(Invoice, "create_invoice")
+connection.sending(Invoice, "create_invoice")   # starting or running
+```
 
 ### Django
 
@@ -769,8 +850,8 @@ python manage.py migrate qubesync
 
 - `quickbooks_desktop/config.py` is imported when the apps are ready (or set `QUBESYNC_CONFIG`
   to another module's dotted path).
-- Onboarding, the questions and the start retry are behind `login_required` and Django's CSRF
-  middleware. With another sign-in, include `qubesync.django.urls.patterns(sign_in=your_decorator)`:
+- Onboarding, the questions, the start retry and the redelivery are behind `login_required` and
+  Django's CSRF middleware. With another sign-in, include `qubesync.django.urls.patterns(sign_in=your_decorator)`:
   `path("", include((qubesync.django.urls.patterns(sign_in=staff_only), "qubesync")))`. The
   routes are named in the `qubesync` namespace (`reverse("qubesync:connections")`).
 - The webhook views are `csrf_exempt` and read the raw body from the request's stream, so
@@ -818,10 +899,18 @@ app.include_router(qubesync.fastapi.router(dependencies=[Depends(signed_in)]))
 
 ### Another framework
 
-`qubesync.kit.receive`, `connect`, `onboarding`, `answer`, `search` and `retry_start` do each
-route's work and return a `Reply` (`status`, and `text`, `json` or `location`); an adapter reads
-the request, calls one, and writes the response. `qubesync.kit.question_context` and
-`run_status_context` are the templates' context.
+`qubesync.kit.receive`, `connect`, `onboarding`, `answer`, `search`, `retry_start` and
+`redeliver` do each route's work and return a `Reply` (`status`, and `text`, `json` or
+`location`); an adapter reads the request, calls one, and writes the response. A `Reply` with an
+`error` is a redirect back whose message the adapter keeps for the page (or, when it can't,
+answers its `fallback` instead). `qubesync.kit.question_context` and `run_status_context` are the
+templates' context, taking that message as `error`.
+
+### What isn't ported
+
+qube_rails tells a record's pages to refresh (Turbo 8 page refreshes over Action Cable) when an
+event changes its run. Django, Flask and FastAPI have nothing that does that out of the box, so
+the kit doesn't: a reload shows the next question or the ending.
 
 ### Storage
 

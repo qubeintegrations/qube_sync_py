@@ -73,6 +73,7 @@ def test_the_routes_are_named_in_the_qubesync_namespace():
     assert reverse("qubesync:question", args=[3]) == "/qube/questions/runs/3"
     assert reverse("qubesync:question_search", args=[3]) == "/qube/questions/runs/3/search"
     assert reverse("qubesync:retry_start", args=[3]) == "/qube/runs/3/retry_start"
+    assert reverse("qubesync:redeliver", args=[3]) == "/qube/runs/3/redeliver"
 
 
 def test_login_required_sends_a_signed_out_user_to_sign_in(app, world):
@@ -128,7 +129,7 @@ def test_patterns_takes_another_sign_in():
 
     urls.patterns(sign_in=staff_only)
 
-    assert sorted(seen) == ["answer", "connect", "onboarding", "retry_start", "search"]
+    assert sorted(seen) == ["answer", "connect", "onboarding", "redeliver", "retry_start", "search"]
 
 
 def test_the_template_tags_render_with_the_pages_csrf_token(app, world, account):
@@ -199,3 +200,41 @@ def test_includes_under_a_prefix():
 
 
 urlpatterns = [path("qube-sync/", include("qubesync.django.urls"))]
+
+
+def test_simulated_connect_follows_debug_unless_production_is_set(app, world, account):
+    client = Client()
+    client.force_login(account.user)
+
+    assert client.post("/quickbooks/connections", {"simulated": "1"}).status_code == 404  # DEBUG is off
+    with override_settings(DEBUG=True):
+        response = client.post("/quickbooks/connections", {"simulated": "1"}, HTTP_REFERER="/account")
+    assert (response.status_code, response["Location"]) == (303, "/account")
+    kit.configure(production=True)
+    with override_settings(DEBUG=True):
+        assert client.post("/quickbooks/connections", {"simulated": "1"}).status_code == 404
+
+
+def test_the_run_status_tag_takes_a_connection(app, world, account):
+    invoice = world.invoice(account)
+    connection = world.connection(account)
+    connection.link(invoice, kind="invoice", qb_id="TXN-1")
+    page = engines["django"].from_string("{% load qubesync %}{% qube_run_status invoice 'create_invoice' connection=connection %}")
+
+    shown = page.render({"invoice": invoice, "connection": connection}, RequestFactory().get("/"))
+
+    assert 'data-qube-sync-status="in_quickbooks"' in shown
+
+
+def test_without_a_session_an_answer_that_cant_go_through_answers_as_text(app, world, account):
+    invoice = world.invoice(account)
+    run = world.run(invoice, world.connection(account), question=QUESTION, links={"decisions": DECISIONS})
+    request = RequestFactory().post("/qube/questions/runs/%s" % run.id, {"choice": "nope"})
+    request.user = account.user
+    request._dont_enforce_csrf_checks = True
+
+    from qubesync.django import views
+
+    response = views.answer(request, str(run.id))
+
+    assert (response.status_code, response.content.decode()) == (409, kit.CHANGED)

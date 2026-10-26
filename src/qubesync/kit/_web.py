@@ -9,6 +9,7 @@ framework's response. An app on another framework can do the same.
     POST qube/questions/runs/<id>                answer: your user's choice, with its fields
     GET  qube/questions/runs/<id>/search         search: a record field's matches, as JSON
     POST qube/runs/<id>/retry_start              retry_start: an unconfirmed start sent again
+    POST qube/runs/<id>/redeliver                redeliver: a stuck run's latest event sent again
 
 Onboarding, the questions and the retry go behind your sign-in (and CSRF, for the POSTs). The
 webhooks go behind nothing: the signature is what proves QuBe Sync sent them.
@@ -33,6 +34,10 @@ __all__ = [
     "Reply",
     "CHANGED",
     "NOT_STARTING",
+    "NOT_QUIET",
+    "REDELIVERY_REFUSED",
+    "NO_ANSWER",
+    "ERROR_KEY",
     "SIGNATURE_HEADER",
     "MAX_WEBHOOK_BODY",
     "receive",
@@ -41,6 +46,7 @@ __all__ = [
     "answer",
     "search",
     "retry_start",
+    "redeliver",
     "authorized_run",
     "owner_answers",
     "question_context",
@@ -54,6 +60,24 @@ __all__ = [
 
 CHANGED = "This question has changed; reload."
 NOT_STARTING = "This run isn't waiting for its start to be confirmed."
+NOT_QUIET = "QuBe Sync has been heard from about this run lately: nothing to ask for."
+REDELIVERY_REFUSED = {
+    409: "QuBe Sync has no news about this run to send yet.",
+    429: "That was asked a moment ago: give it a minute.",
+}
+NO_ANSWER = "QuBe Sync didn't answer: try again in a minute."
+
+# Where an adapter keeps a Reply's error for the templates to show once (session key, cookie).
+ERROR_KEY = "qubesync_error"
+
+# What to check, by the reason a webhook's signature was refused.
+SIGNATURE_HINTS = {
+    "mismatch": "it isn't signed with QUBE_WEBHOOK_SECRET (the webhook_secret setting). Set that to this "
+    "app's webhook secret, which `qube env --write .env` writes, and restart; QuBe Sync sends it again",
+    "stale": "its signature's time is over 5 minutes from this server's clock. Check the clock",
+    "missing": "it has no X-Qube-Signature header, so it isn't from QuBe Sync",
+    "malformed": "its X-Qube-Signature header isn't t=<seconds>,v1=<hex>, so it isn't from QuBe Sync",
+}
 
 # The largest body taken: a pull_changes page can be a few megabytes. Anything larger is
 # answered 413 before it's read.
@@ -64,14 +88,18 @@ _MODELS = {RUN_KIND: RUN, CONNECTION_KIND: CONNECTION}
 
 
 class Reply(object):
-    """What a route answers: a status, and text, JSON or a redirect's location."""
+    """What a route answers: a status, and text, JSON or a redirect's location. error is a
+    message for the page the redirect goes back to, which the adapter keeps for the templates
+    to show once; fallback is the Reply to answer when it can't keep it (no session)."""
 
-    def __init__(self, status, text=None, json=None, location=None):
-        # type: (int, Optional[str], Any, Optional[str]) -> None
+    def __init__(self, status, text=None, json=None, location=None, error=None, fallback=None):
+        # type: (int, Optional[str], Any, Optional[str], Optional[str], Optional[Reply]) -> None
         self.status = status
         self.text = text
         self.json = json
         self.location = location
+        self.error = error
+        self.fallback = fallback
 
     def __repr__(self):
         return "<Reply %d%s>" % (self.status, " -> %s" % self.location if self.location else "")
@@ -80,8 +108,8 @@ class Reply(object):
 # -- Webhooks --------------------------------------------------------------------------------
 
 
-def receive(kind, id, body, signature, enqueue=None):
-    # type: (str, Any, Optional[bytes], Optional[str], Optional[Callable[[Dict[str, Any]], Any]]) -> Reply
+def receive(kind, id, body, signature, enqueue=None, path=None):
+    # type: (str, Any, Optional[bytes], Optional[str], Optional[Callable[[Dict[str, Any]], Any]], Optional[str]) -> Reply
     """QuBe Sync's webhooks at POST webhooks/qube/runs/<run id>, the URL each run was started
     with (Run.webhook_url), and at webhooks/qube/connections/<connection id>, each
     connection's (Connection.webhook_url). It only verifies the delivery, checks the row is
@@ -90,16 +118,20 @@ def receive(kind, id, body, signature, enqueue=None):
 
     body is the raw bytes the signature is over, before anything parses them (None when the
     adapter found it over MAX_WEBHOOK_BODY). enqueue is the adapter's default queue, used when
-    the enqueue setting isn't set."""
+    the enqueue setting isn't set. path is the request's, for the log."""
     if body is None or len(body) > MAX_WEBHOOK_BODY:
         log.warning("QuBe Sync: refused a webhook: its body is over %d bytes", MAX_WEBHOOK_BODY)
         return Reply(413)
     try:
         webhooks.verify(body, signature, secrets=settings().webhook_secret)
     except webhooks.SignatureError as error:
-        # Its reason (missing, malformed, stale or mismatch) is safe to log: never the secret,
-        # the signature or the body.
-        log.warning("QuBe Sync: refused a webhook: %s", error.reason)
+        # The reason is safe to log; never the secret, the signature or the body.
+        log.warning(
+            "QuBe Sync: refused a webhook: %s (%s): %s",
+            error.reason,
+            path or "%s %s" % (kind, id),
+            SIGNATURE_HINTS.get(error.reason, ""),
+        )
         return Reply(401)
     except ValueError as error:
         # Signed, but not a JSON object: nothing a job could take.
@@ -152,20 +184,18 @@ def _enqueued(delivery, default):
 # -- Onboarding ------------------------------------------------------------------------------
 
 
-def connect(request, form):
-    # type: (Any, Mapping[str, Any]) -> Reply
+def connect(request, form, referer=None, host=None, production=True):
+    # type: (Any, Mapping[str, Any], Optional[str], Optional[str], bool) -> Reply
     """POST quickbooks/connections, from a "Connect QuickBooks Desktop" button, with an
-    optional name. Best clicked on the computer where QuickBooks is installed. It sends the
-    account's newest connection that has never connected (pending, or its setup cancelled)
-    back through setup, so clicking Connect again doesn't pile up connections; it makes a new
-    one when the account has none, or with new=1 (a "Connect another company file" button). A
-    new row is written first, so the connection's webhook URL names it; if QuBe Sync doesn't
-    answer, the row is left without a qube_id and the next click picks it up. Until
-    connection.connected comes, show it as waiting for QuickBooks: the setup doesn't come back
-    here."""
+    optional name: the account's newest never-connected connection back through setup, or a
+    new one (none yet, or new=1). With simulated=1, unless production (the production
+    setting, else the adapter's guess), a new connection to a simulated company file, and back
+    to referer. The README's "Routes" has the details."""
     account = _signed_in_account(request)
     if account is None:
         return Reply(401, text="Sign in to connect QuickBooks Desktop.")
+    if str(form.get("simulated") or "") == "1":
+        return _connect_simulated(account, form, referer, host, settings().get("production", production))
 
     store = current_store()
     if str(form.get("new") or "") != "1":
@@ -182,6 +212,18 @@ def connect(request, form):
 
     made = store.create(CONNECTION, owner=account, name=_connection_name(form), status="pending")
     return _send_to_setup(made, fresh=True)
+
+
+def _connect_simulated(account, form, referer, host, production):
+    # type: (Any, Mapping[str, Any], Optional[str], Optional[str], Any) -> Reply
+    if production is not False:
+        return Reply(404, text="Not found.")
+
+    made = current_store().create(CONNECTION, owner=account, name=_connection_name(form), status="pending")
+    created = client().create_connection(webhook_url=made.webhook_url, name=made.name, type="simulated")
+    made.qube_id = created["id"]
+    made._kit_store.save(made, fields=["qube_id"])
+    return Reply(303, location=back(referer, host))
 
 
 def onboarding(request, connection_id):
@@ -293,10 +335,9 @@ def answer(request, run_id, form, referer=None, host=None):
     # type: (Any, Any, Mapping[str, Any], Optional[str], Optional[str]) -> Reply
     """POST qube/questions/runs/<id>: posts your user's choice, with what they filled in for
     its fields, to the question's links.decisions, and sends them back to the page (referer,
-    when it's this app's: host). The question is forgotten once it's answered, or once QuBe
-    Sync says it was answered or asked again since (a 409, or a 400 such as
-    not_awaiting_input); the run's next webhook says what came of it. The call to QuBe Sync is
-    made here, with the API key, so the browser only ever talks to your app."""
+    when it's this app's: host), with why when it didn't go through. The question is forgotten
+    once it's answered, or once QuBe Sync says it was answered or asked again since (a 409, or
+    a 400 such as not_awaiting_input)."""
     found = authorized_run(request, run_id, "an answer or search")
     if isinstance(found, Reply):
         return found
@@ -305,7 +346,7 @@ def answer(request, run_id, form, referer=None, host=None):
     links = run.links or {}
     picked = choice(question, form.get("choice"))
     if picked is None or not links.get("decisions"):
-        return Reply(409, text=CHANGED)
+        return back_with_error(CHANGED, 409, referer, host)
 
     asked = operation(record, run)
     try:
@@ -315,9 +356,9 @@ def answer(request, run_id, form, referer=None, host=None):
             raise
         # A field QuBe Sync couldn't take: its errors.detail says which.
         if error.status == 422:
-            return Reply(422, text=refusal(error))
+            return back_with_error(refusal(error), 422, referer, host)
         asked.answered(question.get("token"))
-        return Reply(409, text=CHANGED)
+        return back_with_error(CHANGED, 409, referer, host)
     asked.answered(question.get("token"))
     return Reply(303, location=back(referer, host))
 
@@ -366,7 +407,7 @@ def retry_start(request, run_id, referer=None, host=None):
         return found
     run = found[0]
     if run.state != "starting":
-        return Reply(409, text=NOT_STARTING)
+        return back_with_error(NOT_STARTING, 409, referer, host)
 
     try:
         run.retry_start()
@@ -377,41 +418,94 @@ def retry_start(request, run_id, referer=None, host=None):
     return Reply(303, location=back(referer, host))
 
 
+def redeliver(request, run_id, referer=None, host=None):
+    # type: (Any, Any, Optional[str], Optional[str]) -> Reply
+    """POST qube/runs/<id>/redeliver, from the run status template's "Send its latest news
+    again" button on a run that looks stuck (Run.looks_stuck): QuBe Sync sends the run's latest
+    event again, through the webhook route. Back to the page, with why when it can't."""
+    found = authorized_run(request, run_id, "a redelivery")
+    if isinstance(found, Reply):
+        return found
+    run = found[0]
+    if not run.looks_stuck():
+        return back_with_error(NOT_QUIET, 409, referer, host)
+
+    try:
+        client().redeliver_run(run.connection.qube_id, run.qube_run_id)
+    except APIError as error:
+        if error.status not in REDELIVERY_REFUSED:
+            raise
+        return back_with_error(REDELIVERY_REFUSED[error.status], error.status, referer, host)
+    except NETWORK_ERRORS:
+        return back_with_error(NO_ANSWER, 503, referer, host)
+    return Reply(303, location=back(referer, host))
+
+
+def back_with_error(message, status, referer=None, host=None):
+    # type: (str, int, Optional[str], Optional[str]) -> Reply
+    """Back to the page with message for the templates to show once, or, where the adapter
+    can't keep it, message as text with status."""
+    return Reply(303, location=back(referer, host), error=message, fallback=Reply(status, text=message))
+
+
 # -- The templates' context ------------------------------------------------------------------
 
 
-def question_context(record, operation, action_for):
-    # type: (Any, str, Callable[[Any], str]) -> Dict[str, Any]
-    """What the question template (qubesync/question.html) reads, for the record's page: the
-    open question of record's latest run of operation (a slug), if it's asking, and action,
-    where it's answered (action_for(run): the adapter's URL for the run's question route).
-    Raises ValueError for a slug none of your operations has."""
+def question_context(record, operation, action_for, error=None):
+    # type: (Any, str, Callable[[Any], str], Optional[str]) -> Dict[str, Any]
+    """What the question template (qubesync/question.html) reads: the open question of
+    record's latest run of operation (a slug), if it's asking, action (action_for(run), its
+    question route), and error (a message to show once). Raises ValueError for a slug none of
+    your operations has."""
     _check_operation(operation)
     run = current_store().model(RUN).latest_for(record, operation)
     question = run.open_question if run is not None else None
     if question is None:
-        return {"question": None, "run": run, "action": None}
-    return {"question": question, "run": run, "action": action_for(run)}
+        return {"question": None, "run": run, "action": None, "error": error}
+    return {"question": question, "run": run, "action": action_for(run), "error": error}
 
 
-def run_status_context(record, operation, retry_action_for):
-    # type: (Any, str, Callable[[Any], str]) -> Dict[str, Any]
-    """What the run status template (qubesync/run_status.html) reads: record's latest run of
-    operation, if any, with its summary, its state for the class (a completed run that chose
-    to stop reads as cancelled), a failure's detail, and retry_action (retry_action_for(run))
-    when the start is unconfirmed. Raises ValueError for a slug none of your operations
+def run_status_context(record, operation, retry_action_for, redeliver_action_for=None, connection=None, error=None):
+    # type: (Any, str, Callable[[Any], str], Optional[Callable[[Any], str]], Any, Optional[str]) -> Dict[str, Any]
+    """What the run status template (qubesync/run_status.html) reads: sync (the SyncStatus on
+    connection, else on the latest run's), its run, summary, state (for the class), a failure's
+    detail, retry_action for an unconfirmed start, redeliver_action for a run that looks stuck,
+    and error (a message to show once). Raises ValueError for a slug none of your operations
     has."""
+    from ._sync_status import SyncStatus
+
     _check_operation(operation)
-    run = current_store().model(RUN).latest_for(record, operation)
-    if run is None:
-        return {"run": None}
+    if connection is not None:
+        sync = connection.sync_status(record, operation)
+    else:
+        sync = SyncStatus.latest(record, operation)
+    run = sync.run
     return {
+        "sync": sync,
+        "status": sync.status,
         "run": run,
-        "summary": run.summary_text,
-        "state": "cancelled" if run.cancelled() else run.state,
-        "detail": run.error_detail if run.failed() else None,
-        "retry_action": retry_action_for(run) if run.unconfirmed() else None,
+        "summary": sync.summary_text,
+        "state": _state_class(run),
+        "detail": run.error_detail if sync.status == "failed" else None,
+        "retry_action": retry_action_for(run) if sync.unconfirmed else None,
+        "redeliver_action": _redeliver_action(run, redeliver_action_for),
+        "error": error,
     }
+
+
+def _state_class(run):
+    # type: (Any) -> Optional[str]
+    # A completed run that chose to stop reads as cancelled.
+    if run is None:
+        return None
+    return "cancelled" if run.cancelled() else run.state
+
+
+def _redeliver_action(run, redeliver_action_for):
+    # type: (Any, Optional[Callable[[Any], str]]) -> Optional[str]
+    if run is None or redeliver_action_for is None or not run.looks_stuck():
+        return None
+    return redeliver_action_for(run)
 
 
 def _check_operation(operation):

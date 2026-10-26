@@ -35,16 +35,23 @@ from ._job import perform, retry_delay, run
 from ._models import family_for
 from ._operation import Operation, without_nils
 from ._settings import Settings, configure, reset, settings
+from ._sync_status import SyncStatus
 from ._web import (
     CHANGED,
+    ERROR_KEY,
     MAX_WEBHOOK_BODY,
+    NO_ANSWER,
+    NOT_QUIET,
     NOT_STARTING,
+    REDELIVERY_REFUSED,
     SIGNATURE_HEADER,
+    SIGNATURE_HINTS,
     Reply,
     answer,
     answer_data,
     authorized_run,
     back,
+    back_with_error,
     choice,
     connect,
     number,
@@ -52,6 +59,7 @@ from ._web import (
     owner_answers,
     question_context,
     receive,
+    redeliver,
     refusal,
     retry_start,
     run_status_context,
@@ -75,6 +83,7 @@ __all__ = [
     # the bases
     "Operation",
     "ConnectionEvents",
+    "SyncStatus",
     "family_for",
     # the client
     "client",
@@ -96,13 +105,19 @@ __all__ = [
     "answer",
     "search",
     "retry_start",
+    "redeliver",
     "authorized_run",
     "owner_answers",
     "question_context",
     "run_status_context",
     "CHANGED",
     "NOT_STARTING",
+    "NOT_QUIET",
+    "REDELIVERY_REFUSED",
+    "NO_ANSWER",
+    "ERROR_KEY",
     "SIGNATURE_HEADER",
+    "SIGNATURE_HINTS",
     "MAX_WEBHOOK_BODY",
     # the answer's parts
     "choice",
@@ -110,6 +125,7 @@ __all__ = [
     "number",
     "refusal",
     "back",
+    "back_with_error",
     # mapping helpers
     "mapping",
     "without_nils",

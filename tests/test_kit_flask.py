@@ -89,7 +89,6 @@ def test_the_forms_carry_flask_wtfs_csrf_token(app, world, account):
 
 
 def test_an_apps_own_template_comes_first(world, account, kit_reset):
-    make_driver("flask")
     invoice = world.invoice(account)
     world.run(invoice, world.connection(account), question=QUESTION, links={"decisions": DECISIONS})
     app = Flask("override", template_folder=os.path.join(HERE, "kit_templates", "override"))
@@ -121,3 +120,43 @@ def test_the_default_queue_runs_each_job_in_an_app_context(app, world, account, 
     assert contexts == ["kit_flask_test"]
     assert world.reload(run).state == "completed"
     assert current_world() is world
+
+
+def test_simulated_connect_follows_debug_and_testing_unless_production_is_set(app, world, account):
+    http = app[0]
+    made = iter(range(10))
+    kit.settings().client.returns["create_connection"] = lambda **kwargs: {"id": "conn-q-sim-%d" % next(made)}
+    assert http.post("/quickbooks/connections", {"simulated": "1"}, account=account).status == 303  # TESTING
+
+    http.app.testing = False
+    try:
+        assert http.post("/quickbooks/connections", {"simulated": "1"}, account=account).status == 404
+        http.app.debug = True
+        assert http.post("/quickbooks/connections", {"simulated": "1"}, account=account).status == 303
+    finally:
+        http.app.testing, http.app.debug = True, False
+    kit.configure(production=True)
+    assert http.post("/quickbooks/connections", {"simulated": "1"}, account=account).status == 404
+
+
+def test_without_a_secret_key_an_answer_that_cant_go_through_answers_as_text(app, world, account):
+    http = app[0]
+    run = world.run(world.invoice(account), world.connection(account), question=QUESTION, links={"decisions": DECISIONS})
+    http.app.secret_key = None
+    try:
+        response = http.post("/qube/questions/runs/%s" % run.id, {"choice": "nope"}, account=account)
+    finally:
+        http.app.secret_key = "kit-tests"
+
+    assert (response.status, response.text) == (409, kit.CHANGED)
+
+
+def test_run_status_html_takes_a_connection(app, world, account):
+    invoice = world.invoice(account)
+    connection = world.connection(account)
+    connection.link(invoice, kind="invoice", qb_id="TXN-1")
+
+    with app[0].app.test_request_context("/"):
+        shown = qube_flask.run_status_html(invoice, "create_invoice", connection=connection)
+
+    assert 'data-qube-sync-status="in_quickbooks"' in shown

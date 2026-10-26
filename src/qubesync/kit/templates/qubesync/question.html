@@ -14,6 +14,7 @@
     This is QuBe Sync's copy, updated with the package. For other markup, put your own at
     templates/qubesync/question.html in your app (it's found first). -#}
 {% autoescape true %}
+{% include "qubesync/_error.html" %}
 {% if question %}
 <section class="qube-question">
   <p class="qube-question-message">{{ question.message }}</p>

@@ -28,12 +28,15 @@ The routes, relative to url_prefix:
     POST /qube/questions/runs/<id>                 qubesync_questions.question
     GET  /qube/questions/runs/<id>/search          qubesync_questions.question_search
     POST /qube/runs/<id>/retry_start               qubesync_questions.retry_start
+    POST /qube/runs/<id>/redeliver                 qubesync_questions.redeliver
 
 With Flask-WTF's CSRFProtect set up before the blueprints are registered, the webhooks
 blueprint is exempted from it (QuBe Sync signs its webhooks instead); set up after, call
 csrf.exempt(bps.webhooks) yourself. The templates' forms carry csrf_token() when Flask-WTF
 provides it. init_app registers qube_question(record, operation) and qube_run_status(record,
-operation) as Jinja globals, for a record's page.
+operation, connection=None) as Jinja globals, for a record's page. A message from a question or
+run route (why it didn't go through) is kept in Flask's session, so it needs a SECRET_KEY;
+without one, the route answers it as text.
 """
 try:
     import flask as _flask  # noqa: F401
@@ -44,7 +47,7 @@ import os
 from collections import namedtuple
 from typing import Any, Callable, Dict, Optional
 
-from flask import Blueprint, current_app, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, current_app, has_request_context, jsonify, redirect, render_template, request, session, url_for
 from markupsafe import Markup
 
 from .. import kit
@@ -60,6 +63,7 @@ __all__ = [
     "run_status_context",
     "question_html",
     "run_status_html",
+    "take_error",
     "TEMPLATES",
 ]
 
@@ -75,6 +79,8 @@ Blueprints = namedtuple("Blueprints", ["webhooks", "connections", "questions"])
 
 def _response(reply):
     # type: (kit.Reply) -> Any
+    if reply.error is not None and not _keep_error(reply.error):
+        return _response(reply.fallback)
     if reply.location is not None:
         return redirect(reply.location, code=reply.status)
     if reply.json is not None:
@@ -82,6 +88,33 @@ def _response(reply):
     if reply.text is not None:
         return reply.text, reply.status, {"Content-Type": "text/plain; charset=utf-8"}
     return "", reply.status
+
+
+def _keep_error(message):
+    # type: (str) -> bool
+    # In the session, for the templates to show once; a NullSession (no SECRET_KEY) can't.
+    try:
+        session[kit.ERROR_KEY] = message
+    except RuntimeError:
+        return False
+    return True
+
+
+def take_error():
+    # type: () -> Any
+    """The message a question or run route left in the session, removed: shown once."""
+    if not has_request_context():
+        return None
+    try:
+        return session.pop(kit.ERROR_KEY, None)
+    except RuntimeError:
+        return None
+
+
+def _production():
+    # type: () -> bool
+    app = current_app
+    return not (app.debug or app.testing)
 
 
 def _in_process(delivery):
@@ -122,12 +155,14 @@ def blueprints(sign_in=None, url_prefix=None):
     @webhooks.route("/webhooks/qube/runs/<id>", methods=["POST"], endpoint="run_webhook")
     def run_webhook(id):
         signature = request.headers.get(kit.SIGNATURE_HEADER)
-        return _response(kit.receive("run", id, _raw_body(), signature, enqueue=_in_process))
+        return _response(kit.receive("run", id, _raw_body(), signature, enqueue=_in_process, path=request.path))
 
     @webhooks.route("/webhooks/qube/connections/<id>", methods=["POST"], endpoint="connection_webhook")
     def connection_webhook(id):
         signature = request.headers.get(kit.SIGNATURE_HEADER)
-        return _response(kit.receive("connection", id, _raw_body(), signature, enqueue=_in_process))
+        return _response(
+            kit.receive("connection", id, _raw_body(), signature, enqueue=_in_process, path=request.path)
+        )
 
     @webhooks.record_once
     def _exempt_from_csrf(state):
@@ -140,7 +175,7 @@ def blueprints(sign_in=None, url_prefix=None):
     @connections.route("/quickbooks/connections", methods=["POST"], endpoint="connections")
     @guard
     def connect():
-        return _response(kit.connect(request, request.form))
+        return _response(kit.connect(request, request.form, request.referrer, request.host, _production()))
 
     @connections.route("/quickbooks/connections/<id>/onboarding", methods=["POST"], endpoint="connection_onboarding")
     @guard
@@ -164,6 +199,11 @@ def blueprints(sign_in=None, url_prefix=None):
     def retry_start(id):
         return _response(kit.retry_start(request, id, request.referrer, request.host))
 
+    @questions.route("/qube/runs/<id>/redeliver", methods=["POST"], endpoint="redeliver")
+    @guard
+    def redeliver(id):
+        return _response(kit.redeliver(request, id, request.referrer, request.host))
+
     return Blueprints(webhooks, connections, questions)
 
 
@@ -181,16 +221,25 @@ def init_app(app, sign_in=None, url_prefix=None):
 def question_context(record, operation):
     # type: (Any, str) -> Dict[str, Any]
     """What qubesync/question.html reads, for the record's page: the open question of record's
-    latest run of operation (a slug), if it's asking, and where it's answered."""
-    return kit.question_context(record, operation, lambda run: url_for("qubesync_questions.question", id=run.id))
+    latest run of operation (a slug), if it's asking, where it's answered, and the session's
+    message (taken)."""
+    return kit.question_context(
+        record, operation, lambda run: url_for("qubesync_questions.question", id=run.id), error=take_error()
+    )
 
 
-def run_status_context(record, operation):
-    # type: (Any, str) -> Dict[str, Any]
-    """What qubesync/run_status.html reads: record's latest run of operation, its summary, a
-    failure's detail, and where an unconfirmed start is sent again."""
+def run_status_context(record, operation, connection=None):
+    # type: (Any, str, Any) -> Dict[str, Any]
+    """What qubesync/run_status.html reads: record's sync status for operation (on connection,
+    else on its latest run's), with the retry and redelivery routes when they apply, and the
+    session's message (taken)."""
     return kit.run_status_context(
-        record, operation, lambda run: url_for("qubesync_questions.retry_start", id=run.id)
+        record,
+        operation,
+        lambda run: url_for("qubesync_questions.retry_start", id=run.id),
+        lambda run: url_for("qubesync_questions.redeliver", id=run.id),
+        connection=connection,
+        error=take_error(),
     )
 
 
@@ -201,9 +250,8 @@ def question_html(record, operation, **context):
     return Markup(render_template("qubesync/question.html", **dict(question_context(record, operation), **context)))
 
 
-def run_status_html(record, operation, **context):
-    # type: (Any, str, **Any) -> Markup
+def run_status_html(record, operation, connection=None, **context):
+    # type: (Any, str, Any, **Any) -> Markup
     """qubesync/run_status.html rendered for record."""
-    return Markup(
-        render_template("qubesync/run_status.html", **dict(run_status_context(record, operation), **context))
-    )
+    values = dict(run_status_context(record, operation, connection), **context)
+    return Markup(render_template("qubesync/run_status.html", **values))

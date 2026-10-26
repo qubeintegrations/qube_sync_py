@@ -6,6 +6,8 @@ from typing import Any, Iterator, List, Optional, Tuple
 from django.apps import apps
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import IntegrityError, close_old_connections, router, transaction
+from django.db.models import CharField, Exists, OuterRef
+from django.db.models.functions import Cast
 from django.utils import timezone
 
 from ..kit._store import CONNECTION, NOTIFICATION, QUICKBOOKS_RECORD, RUN, Store, utc
@@ -49,6 +51,27 @@ class DjangoStore(Store):
     def query(self, model_name, **filters):
         # type: (str, **Any) -> Any
         return self.model(model_name).objects.filter(**_lookups(filters))
+
+    def with_link(self, query, connection_id, linked):
+        # type: (Any, Any, bool) -> Any
+        query = _queryset(query)
+        found = self._exists(QUICKBOOKS_RECORD, query.model, connection_id=connection_id)
+        return query.filter(found) if linked else query.filter(~found)
+
+    def with_run(self, query, connection_id, operation, states):
+        # type: (Any, Any, str, Tuple[str, ...]) -> Any
+        query = _queryset(query)
+        found = self._exists(RUN, query.model, connection_id=connection_id, operation=operation, state__in=list(states))
+        return query.filter(found)
+
+    def _exists(self, model_name, model, **filters):
+        # type: (str, Any, **Any) -> Any
+        rows = self.model(model_name)._base_manager.filter(
+            record_type=model._meta.concrete_model._meta.label,
+            record_id=Cast(OuterRef("pk"), output_field=CharField(max_length=255)),
+            **filters
+        )
+        return Exists(rows)
 
     def save(self, row, fields=None):
         # type: (Any, Optional[List[str]]) -> None
@@ -135,6 +158,12 @@ class DjangoStore(Store):
 def _django_model(obj):
     # type: (Any) -> bool
     return hasattr(getattr(obj, "_meta", None), "concrete_model")
+
+
+def _queryset(query):
+    # type: (Any) -> Any
+    # A model class or a QuerySet.
+    return query._default_manager.all() if isinstance(query, type) else query
 
 
 def _lookups(filters):

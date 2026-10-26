@@ -111,3 +111,10 @@ All tests are organized in the `TestQubeSync` class and use pytest fixtures and 
 - `unittest.mock` - Mocking HTTP requests and external dependencies
 
 The test suite uses the existing virtual environment and installs only necessary testing dependencies.
+
+## The kit's tests on PostgreSQL
+
+The kit's tests run on SQLite by default. With `KIT_PG_URL=postgresql://user:password@host:5432`
+they run on PostgreSQL instead, in its `kit_django` and `kit_sqla` databases (create both first),
+which the sync status scopes' SQL and the start's row lock need (`test_two_starts_at_once_make_one_run`
+runs only there). `psycopg2-binary` is needed.

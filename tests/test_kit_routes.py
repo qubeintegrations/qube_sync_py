@@ -1,6 +1,7 @@
 """Every route and its status codes, through Django's, Flask's and FastAPI's test clients:
-onboarding, the webhooks, the questions, the start retry and the templates on a record's page,
-each scoped to the signed-in account."""
+onboarding, the webhooks, the questions, the start retry, the redelivery and the templates on a
+record's page, each scoped to the signed-in account."""
+import html
 import json
 import logging
 import re
@@ -64,6 +65,17 @@ def queued():
 
 def signed_out(http, response):
     assert response.status in http.signed_out
+
+
+def page(http, invoice, account):
+    response = http.get("/invoices/%s" % invoice.id, account=account)
+    assert response.status == 200
+    return response.text
+
+
+def shown_errors(http, invoice, account):
+    """The messages the invoice page shows (the error a route left goes once)."""
+    return [html.unescape(text) for text in re.findall(r'<p class="qube-error">([^<]*)</p>', page(http, invoice, account))]
 
 
 # -- Onboarding ------------------------------------------------------------------------------
@@ -144,6 +156,30 @@ class TestConnect:
     def test_is_behind_the_apps_sign_in(self, http, world):
         signed_out(http, http.post("/quickbooks/connections"))
         assert world.count(world.Connection) == 0
+
+    def test_makes_a_simulated_connection_on_a_new_row_and_goes_back_outside_production(self, http, world, account, client):
+        kit.configure(production=False)
+        world.connection(account, qube_id="conn-q-pending", status="pending")
+        client.returns["create_connection"] = {"id": "conn-q-sim", "type": "simulated", "links": {"onboarding": ONBOARDING}}
+
+        response = http.post("/quickbooks/connections", {"simulated": "1", "name": "Test file"}, account=account, headers={"Referer": "/account"})
+
+        made = world.all(world.Connection)[-1]
+        assert (response.status, response.location) == (303, "/account")
+        assert client.called("create_connection") == [
+            ("create_connection", (), {"webhook_url": made.webhook_url, "name": "Test file", "type": "simulated"})
+        ]
+        assert (made.owner.id, made.qube_id, made.status) == (account.id, "conn-q-sim", "pending")
+        assert world.count(world.Connection) == 2
+
+    def test_refuses_a_simulated_connection_in_production_with_404(self, http, world, account, client):
+        kit.configure(production=True)
+
+        response = http.post("/quickbooks/connections", {"simulated": "1"}, account=account)
+
+        assert response.status == 404
+        assert world.count(world.Connection) == 0
+        assert client.called("create_connection") == []
 
     def test_answers_401_when_current_account_finds_no_account(self, http, world, account, caplog):
         kit.configure(current_account=lambda request: None)
@@ -275,7 +311,9 @@ class TestRunWebhook:
 
         assert response.status == 401
         assert queued == []
-        assert "QuBe Sync: refused a webhook: %s" % reason in caplog.text
+        assert "QuBe Sync: refused a webhook: %s (/webhooks/qube/runs/%s): " % (reason, run.id) in caplog.text
+        assert {"mismatch": "qube env --write .env", "stale": "Check the clock", "missing": "isn't from QuBe Sync",
+                "malformed": "isn't from QuBe Sync"}[reason] in caplog.text
         assert SECRET not in caplog.text
         assert run.reference not in caplog.text
         if sent and "v1=" in sent:
@@ -407,28 +445,32 @@ class TestAnswer:
 
         assert client.called("answer")[0][2]["data"] == {"count": "three", "taxable": False}
 
-    def test_answers_409_for_a_choice_the_question_doesnt_have(self, http, account, invoice, run, client):
+    def test_goes_back_saying_it_changed_for_a_choice_the_question_doesnt_have(self, http, account, invoice, run, client):
         response = self.answer(http, run, {"choice": "delete_everything"}, account, invoice)
 
-        assert (response.status, response.text) == (409, "This question has changed; reload.")
+        assert (response.status, response.location) == (303, "/invoices/%s" % invoice.id)
         assert client.called("answer") == []
+        assert shown_errors(http, invoice, account) == ["This question has changed; reload."]
+        assert shown_errors(http, invoice, account) == []  # once
 
     @pytest.mark.parametrize("status,code", [(409, "prompt_changed"), (400, "not_awaiting_input"), (400, "bad_request")])
-    def test_forgets_the_question_and_answers_409_when_quickbooks_says_it_changed(self, http, world, account, invoice, run, client, status, code):
+    def test_forgets_the_question_and_goes_back_saying_so_when_quickbooks_says_it_changed(self, http, world, account, invoice, run, client, status, code):
         client.raises["answer"] = api_error(status, {"code": code})
 
         response = self.answer(http, run, {"choice": "use:1"}, account, invoice)
 
-        assert response.status == 409
+        assert response.status == 303
         assert world.reload(run).question is None
+        assert shown_errors(http, invoice, account) == ["This question has changed; reload."]
 
-    def test_keeps_the_question_and_says_why_for_a_422(self, http, world, account, invoice, run, client):
+    def test_keeps_the_question_and_goes_back_saying_why_for_a_422(self, http, world, account, invoice, run, client):
         client.raises["answer"] = api_error(422, {"detail": "count must be a whole number"})
 
         response = self.answer(http, run, {"choice": "add", "data[count]": "3"}, account, invoice)
 
-        assert (response.status, response.text) == (422, "QuBe Sync couldn't take that answer: count must be a whole number")
+        assert response.status == 303
         assert world.reload(run).question == QUESTION
+        assert shown_errors(http, invoice, account) == ["QuBe Sync couldn't take that answer: count must be a whole number"]
 
     def test_raises_for_anything_else_quickbooks_answers(self, http, account, invoice, run, client):
         client.raises["answer"] = api_error(500, "boom")
@@ -501,10 +543,11 @@ class TestAnswer:
 
         assert self.answer(http, run, {"choice": "use:1"}, account, invoice).status == 404
 
-    def test_answers_409_for_a_run_that_has_stopped_asking(self, http, world, account, invoice, run):
+    def test_goes_back_saying_it_changed_for_a_run_that_has_stopped_asking(self, http, world, account, invoice, run):
         run = world.update(run, question=None, links=None)
 
-        assert self.answer(http, run, {"choice": "use:1"}, account, invoice).status == 409
+        assert self.answer(http, run, {"choice": "use:1"}, account, invoice).status == 303
+        assert shown_errors(http, invoice, account) == ["This question has changed; reload."]
 
     def test_answers_404_for_a_run_that_isnt_there_or_whose_operation_isnt_configured(self, http, account, invoice, run):
         assert http.post("/qube/questions/runs/0", {"choice": "x"}, account=account).status == 404
@@ -618,11 +661,12 @@ class TestRetryStart:
         assert self.retry(http, run, account, invoice).status == 303
         assert world.reload(run).state == "failed"
 
-    def test_answers_409_for_a_run_that_isnt_starting(self, http, world, account, invoice, run, client):
+    def test_goes_back_saying_so_for_a_run_that_isnt_starting(self, http, world, account, invoice, run, client):
         run = world.update(run, state="running")
 
-        assert self.retry(http, run, account, invoice).status == 409
+        assert self.retry(http, run, account, invoice).status == 303
         assert client.called("start_run") == []
+        assert shown_errors(http, invoice, account) == ["This run isn't waiting for its start to be confirmed."]
 
     def test_answers_404_for_another_accounts_run_logged_and_sends_nothing(self, http, world, invoice, run, client, caplog):
         response = self.retry(http, run, world.account("Someone else"), invoice)
@@ -649,6 +693,70 @@ class TestRetryStart:
     def test_is_behind_the_apps_sign_in(self, http, run, client):
         signed_out(http, http.post("/qube/runs/%s/retry_start" % run.id))
         assert client.called("start_run") == []
+
+
+# -- The redelivery --------------------------------------------------------------------------
+
+
+class TestRedeliver:
+    @pytest.fixture
+    def invoice(self, world, account):
+        return world.invoice(account)
+
+    @pytest.fixture
+    def run(self, world, account, invoice):
+        made = world.run(invoice, world.connection(account), state="running", qube_run_id="run-q-7")
+        return world.quiet(made, 11 * 60)
+
+    def redeliver(self, http, run, account, invoice):
+        return http.post("/qube/runs/%s/redeliver" % run.id, account=account, headers={"Referer": "/invoices/%s" % invoice.id})
+
+    def test_asks_quickbooks_to_send_a_stuck_runs_latest_event_again_and_goes_back(self, http, account, invoice, run, client):
+        response = self.redeliver(http, run, account, invoice)
+
+        assert client.called("redeliver_run") == [("redeliver_run", (QUBE_ID, "run-q-7"), {})]
+        assert (response.status, response.location) == (303, "/invoices/%s" % invoice.id)
+        assert shown_errors(http, invoice, account) == []
+
+    @pytest.mark.parametrize(
+        "status,message",
+        [(409, "QuBe Sync has no news about this run to send yet."), (429, "That was asked a moment ago: give it a minute.")],
+    )
+    def test_goes_back_saying_why_when_quickbooks_refuses(self, http, account, invoice, run, client, status, message):
+        client.raises["redeliver_run"] = api_error(status, {"code": "nothing_to_redeliver"})
+
+        assert self.redeliver(http, run, account, invoice).status == 303
+        assert shown_errors(http, invoice, account) == [message]
+
+    def test_goes_back_saying_so_when_quickbooks_doesnt_answer(self, http, account, invoice, run, client):
+        client.raises["redeliver_run"] = timeout()
+
+        assert self.redeliver(http, run, account, invoice).status == 303
+        assert shown_errors(http, invoice, account) == ["QuBe Sync didn't answer: try again in a minute."]
+
+    def test_raises_for_anything_else_quickbooks_answers(self, http, account, invoice, run, client):
+        client.raises["redeliver_run"] = api_error(500)
+
+        with pytest.raises(kit.APIError):
+            self.redeliver(http, run, account, invoice)
+
+    def test_asks_nothing_for_a_run_heard_from_lately(self, http, world, account, invoice, run, client):
+        run = world.quiet(run, 60)
+
+        assert self.redeliver(http, run, account, invoice).status == 303
+        assert client.called("redeliver_run") == []
+        assert shown_errors(http, invoice, account) == ["QuBe Sync has been heard from about this run lately: nothing to ask for."]
+
+    def test_answers_404_for_another_accounts_run_and_asks_nothing(self, http, world, invoice, run, client, caplog):
+        response = self.redeliver(http, run, world.account("Someone else"), invoice)
+
+        assert response.status == 404
+        assert "refused a redelivery for run %s" % run.id in caplog.text
+        assert client.called("redeliver_run") == []
+
+    def test_is_behind_the_apps_sign_in(self, http, run, client):
+        signed_out(http, http.post("/qube/runs/%s/redeliver" % run.id))
+        assert client.called("redeliver_run") == []
 
 
 # -- The templates ---------------------------------------------------------------------------
@@ -732,7 +840,8 @@ class TestRunStatusTemplate:
 
         shown = self.page(http, invoice, account)
 
-        assert 'class="qube-run-status qube-run-failed"' in shown
+        assert 'class="qube-run-status qube-sync-failed qube-run-failed"' in shown
+        assert 'data-qube-sync-status="failed"' in shown
         assert '<p class="qube-run-summary">Failed: No customer &lt;b&gt;named&lt;/b&gt; Riverbend</p>' in shown
         assert '<p class="qube-run-error-detail">Add the customer first.</p>' in shown
 
@@ -760,6 +869,32 @@ class TestRunStatusTemplate:
     def test_shows_nothing_for_a_record_with_no_runs(self, http, account, invoice):
         assert "qube-run-status" not in self.page(http, invoice, account)
 
+    def test_a_linked_record_with_no_run_is_in_quickbooks_on_its_connection_only(self, http, world, account, invoice, connection):
+        connection.link(invoice, kind="invoice", qb_id="TXN-1")
+
+        values = kit.run_status_context(invoice, "create_invoice", lambda run: "", connection=connection)
+
+        assert (values["status"], values["summary"], values["run"]) == ("in_quickbooks", "In QuickBooks", None)
+        assert "qube-run-status" not in self.page(http, invoice, account)  # no run: no connection to read
+
+    def test_offers_to_send_a_stuck_runs_latest_news_again_and_only_then(self, http, world, account, invoice, connection):
+        run = world.run(invoice, connection, state="running", qube_run_id="run-q-7")
+        assert "qube-redeliver" not in self.page(http, invoice, account)
+
+        world.quiet(run, 11 * 60)
+        shown = self.page(http, invoice, account)
+
+        assert '<p class="qube-run-quiet">No news from QuBe Sync about it for a while.</p>' in shown
+        assert 'action="/qube/runs/%s/redeliver"' % run.id in shown
+        assert '<button type="submit" class="qube-redeliver">Send its latest news again</button>' in shown
+
     def test_raises_for_a_slug_no_operation_has(self, world, invoice):
         with pytest.raises(ValueError, match="no operation has the slug 'nope'"):
             kit.run_status_context(invoice, "nope", lambda run: "")
+
+    def test_reads_the_status_on_the_connection_its_given(self, world, account, invoice, connection):
+        other = world.connection(account, qube_id="conn-q-other")
+        world.run(invoice, connection, state="failed", ended_at=world.Run._kit_store.now())
+
+        assert kit.run_status_context(invoice, "create_invoice", lambda run: "")["status"] == "failed"
+        assert kit.run_status_context(invoice, "create_invoice", lambda run: "", connection=other)["status"] == "not_sent"

@@ -1,10 +1,14 @@
 """The kit's tables and what it does with them, on Django's ORM and on SQLAlchemy: connections
-(link, move, list families, adoption), runs (every ending kept, the summary), operations
-(start, retry_start, the job's checks), connection events, notification dedupe and the default
-queue's retries."""
+(link, move, list families, adoption), runs (every ending kept, the summary, looks_stuck),
+operations (start and its reuse, retry_start, the job's checks), sync status and its scopes,
+connection events, notification dedupe and the default queue's retries. With KIT_PG_URL set
+(tests/README.md) they run on PostgreSQL."""
 import datetime
 import json
 import logging
+import os
+import threading
+import time
 
 import pytest
 import requests
@@ -663,6 +667,93 @@ class TestStart:
         assert world.all(world.Run)[-1].state == "starting"
 
 
+    def test_leaves_the_run_starting_on_a_409_the_other_clicks_call_in_flight(self, world, invoice, connection, client):
+        client.raises["start_run"] = api_error(409, "Idempotency-Key is being used by another call: try again")
+
+        with pytest.raises(kit.APIError):
+            CreateInvoice.start(invoice, connection)
+        assert world.all(world.Run)[-1].state == "starting"
+
+    def test_returns_the_records_run_that_hasnt_ended_rather_than_starting_another(self, world, invoice, connection, client):
+        first = CreateInvoice.start(invoice, connection)
+        assert first.reused is False
+
+        again = CreateInvoice.start(invoice, connection)
+
+        assert (again.id, again.reused) == (first.id, True)
+        assert len(client.called("start_run")) == 1
+        assert world.count(world.Run) == 1
+
+    def test_resends_an_unconfirmed_start_with_its_reference_and_stored_input(self, world, invoice, connection, client):
+        client.raises["start_run"] = timeout()
+        with pytest.raises(requests.Timeout):
+            CreateInvoice.start(invoice, connection)
+        invoice.number = "changed since"
+        world.write(invoice)
+        del client.raises["start_run"]
+
+        again = CreateInvoice.start(invoice, connection)
+
+        first, second = client.called("start_run")
+        assert second[2]["reference"] == first[2]["reference"] == again.reference
+        assert second[1][2] == {"operation": "invoice.create", "params": {"ref_number": "1001"}}
+        again = world.reload(again)
+        assert (again.qube_run_id, again.state, world.count(world.Run)) == ("run-q-1", "running", 1)
+
+    def test_makes_a_new_reference_once_the_last_run_has_ended(self, world, invoice, connection, client):
+        first = CreateInvoice.start(invoice, connection)
+        world.update(first, state="failed")
+
+        second = CreateInvoice.start(invoice, connection)
+
+        assert second.id != first.id and second.reference != first.reference and not second.reused
+
+    def test_keeps_each_connections_and_operations_runs_apart(self, world, account, invoice, connection, client):
+        first = CreateInvoice.start(invoice, connection)
+        client.returns["start_run"] = {"id": "run-q-2", "state": "running"}
+        other = CreateInvoice.start(invoice, world.connection(account, qube_id="conn-q-other"))
+
+        assert other.id != first.id and not other.reused
+
+    def test_an_input_that_raises_leaves_one_failed_row_and_raises(self, world, invoice, connection, client, monkeypatch):
+        def broken(operation):
+            raise ValueError("no customer")
+
+        monkeypatch.setattr(CreateInvoice, "input", broken)
+
+        with pytest.raises(ValueError, match="no customer"):
+            CreateInvoice.start(invoice, connection)
+        rows = world.all(world.Run)
+        assert [(row.state, row.input) for row in rows] == [("failed", None)]
+
+    @pytest.mark.skipif(not os.environ.get("KIT_PG_URL"), reason="row locks need PostgreSQL (KIT_PG_URL)")
+    def test_two_starts_at_once_make_one_run(self, world, invoice, connection, client):
+        gate = threading.Barrier(2)
+        started = []
+
+        def slow_start(*args, **kwargs):
+            time.sleep(0.2)
+            return {"id": "run-q-1", "state": "running"}
+
+        client.returns["start_run"] = slow_start
+
+        def click():
+            gate.wait()
+            try:
+                started.append(CreateInvoice.start(invoice, world.reload(connection)).id)
+            finally:
+                world.release()
+
+        threads = [threading.Thread(target=click) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert len(started) == 2 and len(set(started)) == 1
+        assert world.count(world.Run) == 1
+
+
 class TestRetryStart:
     def test_resends_the_same_reference_workflow_input_and_webhook_url(self, world, invoice, connection, client):
         client.raises["start_run"] = timeout()
@@ -1048,3 +1139,173 @@ class TestDefaultQueue:
         assert len(tries) == 3
         assert "QuBe Sync: gave up on a webhook for run %s after 3 attempts: RuntimeError: app bug" % run_id in caplog.text
         assert world.reload(run).state == "running"  # each attempt rolled back
+
+
+# -- Sync status -----------------------------------------------------------------------------
+
+
+def ended(world, run, state="completed", seconds_ago=0, **fields):
+    moment = world.Run._kit_store.now() - datetime.timedelta(seconds=seconds_ago)
+    return world.update(run, state=state, ended_at=moment, updated_at=moment, **fields)
+
+
+def linked(world, connection, invoice, seconds_ago=0):
+    row = connection.link(invoice, kind="invoice", qb_id="TXN-1")
+    moment = world.Run._kit_store.now() - datetime.timedelta(seconds=seconds_ago)
+    return world.update(row, updated_at=moment)
+
+
+class TestSyncStatus:
+    def status(self, connection, invoice):
+        return connection.sync_status(invoice, "create_invoice")
+
+    def test_not_sent_with_no_run_and_no_link(self, connection, invoice):
+        status = self.status(connection, invoice)
+
+        assert (status.status, status.qb_id, status.error, status.retry, status.unconfirmed) == ("not_sent", None, None, False, False)
+        assert status.summary_text is None
+
+    @pytest.mark.parametrize("state,expected", [("starting", "sending"), ("running", "sending"), ("awaiting_input", "needs_answer")])
+    def test_a_run_that_hasnt_ended_wins_over_a_link(self, world, connection, invoice, state, expected):
+        linked(world, connection, invoice)
+        world.run(invoice, connection, state=state)
+
+        status = self.status(connection, invoice)
+
+        assert (status.status, status.qb_id, status.retry) == (expected, "TXN-1", False)
+
+    def test_an_unconfirmed_start_is_sending_and_unconfirmed(self, world, connection, invoice):
+        world.ago(world.run(invoice, connection, state="starting"), 120)
+
+        status = self.status(connection, invoice)
+
+        assert (status.status, status.unconfirmed, status.summary_text) == ("sending", True, "Not confirmed by QuBe Sync yet")
+
+    def test_failed_with_its_error_and_retry_when_not_linked(self, world, connection, invoice):
+        error = {"message": "No customer named Riverbend"}
+        ended(world, world.run(invoice, connection), state="failed", error=error)
+
+        status = self.status(connection, invoice)
+
+        assert (status.status, status.error, status.retry) == ("failed", error, True)
+        assert status.summary_text == "Failed: No customer named Riverbend"
+
+    def test_a_failure_after_the_link_wins_without_a_retry(self, world, connection, invoice):
+        linked(world, connection, invoice, seconds_ago=3600)
+        ended(world, world.run(invoice, connection), state="failed")
+
+        status = self.status(connection, invoice)
+
+        assert (status.status, status.qb_id, status.retry) == ("failed", "TXN-1", False)
+
+    def test_a_link_after_the_failure_is_in_quickbooks(self, world, connection, invoice):
+        ended(world, world.run(invoice, connection), state="failed", seconds_ago=3600)
+        linked(world, connection, invoice)
+
+        status = self.status(connection, invoice)
+
+        assert (status.status, status.qb_id, status.error, status.summary_text) == ("in_quickbooks", "TXN-1", None, "In QuickBooks")
+
+    def test_cancelled_including_a_chart_that_chose_to_stop(self, world, connection, invoice):
+        ended(world, world.run(invoice, connection), state="completed", outcome="cancelled")
+
+        status = self.status(connection, invoice)
+
+        assert (status.status, status.retry) == ("cancelled", True)
+
+    def test_a_completed_run_with_its_link_is_in_quickbooks_in_its_words(self, world, connection, invoice):
+        ended(world, world.run(invoice, connection), outcome="added", seconds_ago=10)
+        linked(world, connection, invoice)
+
+        status = self.status(connection, invoice)
+
+        assert (status.status, status.summary_text) == ("in_quickbooks", "Added to QuickBooks")
+
+    def test_a_completed_run_that_linked_nothing_is_done(self, world, connection, invoice):
+        ended(world, world.run(invoice, connection), outcome="completed")
+
+        status = self.status(connection, invoice)
+
+        assert (status.status, status.qb_id, status.retry, status.summary_text) == ("done", None, False, "Done")
+
+    def test_is_per_connection_and_operation(self, world, account, connection, invoice):
+        other = world.connection(account, qube_id="conn-q-other")
+        world.run(invoice, connection, state="running")
+        linked(world, other, invoice)
+
+        assert self.status(connection, invoice).status == "sending"
+        assert self.status(other, invoice).status == "in_quickbooks"
+        assert connection.sync_status(invoice, "sync_customer").status == "not_sent"
+
+    def test_latest_reads_it_on_the_latest_runs_connection(self, world, account, connection, invoice):
+        assert kit.SyncStatus.latest(invoice, "create_invoice").status == "not_sent"
+        other = world.connection(account, qube_id="conn-q-other")
+        world.ago(world.run(invoice, connection, state="running"), 60)
+        ended(world, world.run(invoice, other), state="failed")
+
+        assert kit.SyncStatus.latest(invoice, "create_invoice").status == "failed"
+
+
+class TestSyncStatusScopes:
+    @pytest.fixture
+    def invoices(self, world, account):
+        return [world.invoice(account, number=str(1000 + n)) for n in range(4)]
+
+    def ids(self, world, rows):
+        return sorted(row.id for row in rows)
+
+    def query(self, world):
+        if world.name == "django":
+            return world.Invoice.objects.filter(number__startswith="10")
+        return world.Session().query(world.Invoice).filter(world.Invoice.number.like("10%"))
+
+    def test_in_and_not_in_quickbooks_by_this_connections_links(self, world, account, connection, invoices):
+        connection.link(invoices[0], kind="invoice", qb_id="TXN-0")
+        connection.link(invoices[1], kind="invoice_copy", qb_id="TXN-1")
+        world.connection(account, qube_id="conn-q-other").link(invoices[2], kind="invoice", qb_id="TXN-2")
+
+        assert self.ids(world, connection.in_quickbooks(world.Invoice)) == self.ids(world, invoices[:2])
+        assert self.ids(world, connection.not_in_quickbooks(self.query(world))) == self.ids(world, invoices[2:])
+
+    def test_needing_answer_and_sending_by_this_connections_runs_of_that_operation(self, world, account, connection, invoices):
+        world.run(invoices[0], connection, state="awaiting_input")
+        world.run(invoices[1], connection, state="starting")
+        world.run(invoices[2], connection, state="running")
+        world.run(invoices[3], connection, state="completed")
+        world.run(invoices[3], world.connection(account, qube_id="conn-q-other"), state="awaiting_input")
+        world.run(invoices[3], connection, operation="sync_customer", state="awaiting_input")
+
+        assert self.ids(world, connection.needing_answer(world.Invoice, "create_invoice")) == self.ids(world, invoices[:1])
+        assert self.ids(world, connection.sending(self.query(world), "create_invoice")) == self.ids(world, invoices[1:3])
+
+    def test_takes_a_select_on_sqlalchemy(self, world, connection, invoices):
+        if world.name != "sqlalchemy":
+            pytest.skip("SQLAlchemy's select()")
+        from sqlalchemy import select
+
+        connection.link(invoices[0], kind="invoice", qb_id="TXN-0")
+
+        found = world.Session().execute(connection.in_quickbooks(select(world.Invoice))).scalars().all()
+
+        assert self.ids(world, found) == self.ids(world, invoices[:1])
+
+
+class TestLooksStuck:
+    def test_a_confirmed_run_quiet_for_ten_minutes_while_running(self, world, invoice, connection):
+        run = world.run(invoice, connection, state="running", qube_run_id="run-q-7")
+        assert not run.looks_stuck()
+
+        assert world.quiet(run, 11 * 60).looks_stuck()
+
+    def test_waiting_on_a_question_it_never_received(self, world, invoice, connection):
+        run = world.quiet(world.run(invoice, connection, state="awaiting_input", qube_run_id="run-q-7"), 11 * 60)
+        assert run.looks_stuck()
+
+        asked = world.quiet(world.update(run, question={"token": "t"}), 11 * 60)
+        assert not asked.looks_stuck()
+
+    @pytest.mark.parametrize("fields", [{"qube_run_id": None, "state": "running"}, {"qube_run_id": "q", "state": "completed"}, {"qube_run_id": "q", "state": "starting"}])
+    def test_never_an_unconfirmed_ended_or_starting_run(self, world, invoice, connection, fields):
+        run = world.quiet(world.run(invoice, connection, **fields), 11 * 60)
+
+        assert not run.looks_stuck()

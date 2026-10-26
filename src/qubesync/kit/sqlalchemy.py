@@ -41,7 +41,9 @@ from sqlalchemy import (
     MetaData,
     String,
     Text,
+    cast,
     inspect,
+    select,
 )
 from sqlalchemy.exc import IntegrityError, NoInspectionAvailable
 from sqlalchemy.orm import declarative_base, relationship, validates
@@ -121,6 +123,15 @@ class Run(RunMixin, Base):
         Index("index_qube_runs_on_reference", "reference", unique=True),
         Index("index_qube_runs_on_connection_id", "connection_id"),
         Index("index_qube_runs_on_record_and_operation", "record_type", "record_id", "operation", "created_at"),
+        # For SyncStatus and the connection's scopes.
+        Index(
+            "index_qube_runs_on_connection_record_and_state",
+            "connection_id",
+            "record_type",
+            "record_id",
+            "operation",
+            "state",
+        ),
     )
 
     id = Column(_ID, primary_key=True)
@@ -180,6 +191,8 @@ class QuickbooksRecord(QuickbooksRecordMixin, Base):
             "record_id",
             unique=True,
         ),
+        # A record's link on a connection whatever its kind: SyncStatus and the scopes.
+        Index("index_qube_quickbooks_records_on_connection_and_record", "connection_id", "record_type", "record_id"),
     )
 
     id = Column(_ID, primary_key=True)
@@ -260,6 +273,38 @@ class SQLAlchemyStore(Store):
             attribute = getattr(cls, column)
             query = query.filter(attribute.in_(value) if isinstance(value, (list, tuple)) else attribute == value)
         return query
+
+    def with_link(self, query, connection_id, linked):
+        # type: (Any, Any, bool) -> Any
+        query, model = self._query_of(query)
+        found = self._exists(QuickbooksRecord, model, connection_id=connection_id)
+        return _where(query, found if linked else ~found)
+
+    def with_run(self, query, connection_id, operation, states):
+        # type: (Any, Any, str, Tuple[str, ...]) -> Any
+        query, model = self._query_of(query)
+        found = self._exists(Run, model, Run.state.in_(list(states)), connection_id=connection_id, operation=operation)
+        return _where(query, found)
+
+    def _query_of(self, query):
+        # type: (Any) -> Tuple[Any, Any]
+        # A model class, a Query or a Select, and the model it's of.
+        if isinstance(query, type):
+            return self.session().query(query), query
+        return query, query.column_descriptions[0]["entity"]
+
+    def _exists(self, table, model, *conditions, **columns):
+        # type: (Any, Any, *Any, **Any) -> Any
+        mapper = inspect(model)
+        base = mapper.base_mapper.class_
+        type_name = "%s.%s" % (base.__module__, base.__qualname__)
+        id_as_text = cast(mapper.primary_key[0], String(255))
+        matches = [getattr(table, name) == value for name, value in columns.items()]
+        return (
+            select(table.id)
+            .where(table.record_type == type_name, table.record_id == id_as_text, *(matches + list(conditions)))
+            .exists()
+        )
 
     def save(self, row, fields=None):
         # type: (Any, Optional[List[str]]) -> None
@@ -350,6 +395,11 @@ class SQLAlchemyStore(Store):
         remove = getattr(settings().get("db_session"), "remove", None)
         if callable(remove):
             remove()
+
+
+def _where(query, condition):
+    # type: (Any, Any) -> Any
+    return query.filter(condition) if hasattr(query, "filter") else query.where(condition)
 
 
 def _typed_key(cls, id):

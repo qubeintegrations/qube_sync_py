@@ -2,7 +2,7 @@
 
     urlpatterns += [path("", include("qubesync.django.urls"))]
 
-Onboarding, the questions and the start retry are behind Django's login_required (LOGIN_URL),
+Onboarding, the questions, the start retry and the redelivery are behind Django's login_required (LOGIN_URL),
 and the POSTs behind Django's CSRF middleware. With another sign-in, include
 patterns(sign_in=your_decorator) instead:
 
@@ -23,8 +23,8 @@ app_name = "qubesync"
 
 def patterns(sign_in=None):
     # type: (Optional[Callable[[Any], Any]]) -> List[Any]
-    """The routes, with sign_in (a view decorator; login_required when None) on onboarding,
-    the questions and the start retry."""
+    """The routes, with sign_in (a view decorator; login_required when None) on all but the
+    webhooks."""
     if sign_in is None:
         from django.contrib.auth.decorators import login_required
 
@@ -41,6 +41,8 @@ def patterns(sign_in=None):
         path("webhooks/qube/connections/<str:id>", views.connection_webhook, name="connection_webhook"),
         # A start QuBe Sync never confirmed, sent again, from the run status template.
         path("qube/runs/<str:id>/retry_start", sign_in(views.retry_start), name="retry_start"),
+        # A run that looks stuck, its latest event sent again, from the run status template.
+        path("qube/runs/<str:id>/redeliver", sign_in(views.redeliver), name="redeliver"),
         # Your user's answer to a run's question, from the question template, and a record
         # field's search.
         path("qube/questions/runs/<str:id>", sign_in(views.answer), name="question"),

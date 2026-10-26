@@ -43,6 +43,7 @@ _DESCRIPTIONS = {
     "webhook_secret": "your app's webhook secret, or a list of them while one rotates",
     "webhook_url": "the base of each run's and each connection's webhook URL",
     "client": "a qubesync.Client to use instead of the one made from api_key and base_url",
+    "production": "True in production, where Connect refuses simulated=1 (404)",
 }
 
 # Read from the environment at first use, when configure didn't set them.
@@ -227,6 +228,9 @@ def _validate(name, value):
         secrets = [value] if isinstance(value, (str, bytes)) else value
         if not isinstance(secrets, (list, tuple)) or not secrets:
             raise TypeError("qubesync.kit: webhook_secret is a string, or a list of them")
+    elif name == "production":
+        if not isinstance(value, bool):
+            raise TypeError("qubesync.kit: production is True or False, in %s" % CONFIG_FILE)
     elif name in ("api_key", "base_url", "webhook_url"):
         if not isinstance(value, str) or not value.strip():
             raise TypeError("qubesync.kit: %s is a non-empty string" % name)
@@ -280,6 +284,9 @@ def configure(**values):
                         default to QUBE_API_KEY, QUBE_URL (https://qubesync.com),
                         QUBE_WEBHOOK_SECRET and QUBE_WEBHOOK_URL, read at first use
     client              a qubesync.Client to use instead (tests, or one made your way)
+    production          True where Connect must refuse simulated=1 (404). Default: the
+                        adapter's guess (Django: not DEBUG; Flask: not debug or testing;
+                        FastAPI: not app.debug); with none, True
     """
     _SETTINGS.update(**values)
     return _SETTINGS

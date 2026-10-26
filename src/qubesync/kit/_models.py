@@ -39,6 +39,13 @@ CLOCK_SKEW_SECONDS = 5 * 60
 # How long a start may go unconfirmed before the status says so and offers to send it again.
 UNCONFIRMED_AFTER_SECONDS = 60
 
+# How long a confirmed run may go without news before the status offers a redelivery.
+QUIET_AFTER_SECONDS = 10 * 60
+
+# The run states the sync status scopes look for.
+ASKING_STATES = ("awaiting_input",)
+SENDING_STATES = ("starting", "running")
+
 
 def dump_json(value):
     # type: (Any) -> Optional[str]
@@ -135,6 +142,33 @@ class ConnectionMixin(object):
         """Stalled because the Web Connector isn't checking in (the QuickBooks computer is
         off, or the Web Connector closed), rather than because it can't open QuickBooks."""
         return self.status == "stalled" and self.stall_reason == "not_checking_in"
+
+    def sync_status(self, record, operation):
+        # type: (Any, str) -> Any
+        """Where record stands with QuickBooks on this connection for operation (a slug): a
+        SyncStatus, derived from its runs and its link, never stored."""
+        from ._sync_status import SyncStatus
+
+        return SyncStatus.of(self, record, operation)
+
+    def in_quickbooks(self, query):
+        # type: (Any) -> Any
+        """Your records in query (a model, or the ORM's query of one) linked on this connection."""
+        return self._kit_store.with_link(query, self.id, linked=True)
+
+    def not_in_quickbooks(self, query):
+        # type: (Any) -> Any
+        return self._kit_store.with_link(query, self.id, linked=False)
+
+    def needing_answer(self, query, operation):
+        # type: (Any, str) -> Any
+        """Your records in query whose run of operation on this connection waits for an answer."""
+        return self._kit_store.with_run(query, self.id, str(operation), ASKING_STATES)
+
+    def sending(self, query, operation):
+        # type: (Any, str) -> Any
+        """Your records in query whose run of operation on this connection is starting or running."""
+        return self._kit_store.with_run(query, self.id, str(operation), SENDING_STATES)
 
     def adopt_qube_connection(self):
         # type: () -> Optional[str]
@@ -358,6 +392,9 @@ class RunMixin(object):
 
     ENDED_STATES = ENDED_STATES
 
+    # True on the run Operation.start returned instead of starting another. Not saved.
+    reused = False
+
     @classmethod
     def latest_for(cls, record, operation):
         # type: (Any, str) -> Any
@@ -422,6 +459,24 @@ class RunMixin(object):
         if self.state != "starting" or created_at is None:
             return False
         return created_at < store.utc(store.now()) - datetime.timedelta(seconds=UNCONFIRMED_AFTER_SECONDS)
+
+    def looks_stuck(self):
+        # type: () -> bool
+        """Confirmed, not ended, and quiet for QUIET_AFTER_SECONDS while running or waiting on a
+        question this app never received: its webhook may have been lost."""
+        return self._quiet() and (self.state == "running" or self._question_missing())
+
+    def _quiet(self):
+        # type: () -> bool
+        store = self._kit_store
+        updated_at = store.utc(self.updated_at)
+        if not self.qube_run_id or self.ended() or updated_at is None:
+            return False
+        return updated_at < store.utc(store.now()) - datetime.timedelta(seconds=QUIET_AFTER_SECONDS)
+
+    def _question_missing(self):
+        # type: () -> bool
+        return self.state == "awaiting_input" and self.open_question is None
 
     @property
     def summary_text(self):

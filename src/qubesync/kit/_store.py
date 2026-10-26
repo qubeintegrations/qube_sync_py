@@ -80,6 +80,19 @@ class Store(object):
         """The ORM's own query for those rows (a QuerySet, or a SQLAlchemy Query)."""
         raise NotImplementedError
 
+    def with_link(self, query, connection_id, linked):
+        # type: (Any, Any, bool) -> Any
+        """query (a model of yours, or the ORM's query of one) narrowed to the records with
+        (linked=True) or without a qube_quickbooks_records row on the connection: one EXISTS, by
+        the model's primary key as text."""
+        raise NotImplementedError
+
+    def with_run(self, query, connection_id, operation, states):
+        # type: (Any, Any, str, Tuple[str, ...]) -> Any
+        """query narrowed to the records with a run of operation on the connection in one of
+        states."""
+        raise NotImplementedError
+
     def save(self, row, fields=None):
         # type: (Any, Optional[List[str]]) -> None
         """Writes row (only those fields, when given, so a row a webhook changed meanwhile

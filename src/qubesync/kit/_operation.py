@@ -85,19 +85,10 @@ class Operation(object):
     @classmethod
     def start(cls, record, connection):
         # type: (Any, Any) -> Any
-        """Starts the operation's run for record, one your app has saved, on connection (a
-        Connection the customer has finished onboarding, so it has a qube_id), and returns the
-        run row. The row is written first, with a new reference (<slug>-<record id>-<uuid>)
-        and state "starting", since a webhook can arrive before this returns, and keeps the
-        input it was started with.
-
-        The reference is also the Idempotency-Key. When QuBe Sync refuses the start (a 4xx:
-        bad input, a workflow that isn't published) or the input raises, the row is marked
-        "failed" and the error raised: nothing was started, and starting again makes a new
-        run. When the start gets no answer (a timeout, a 5xx, a dropped connection) it may
-        have started, so the row stays "starting" and the error is raised: send it again with
-        run.retry_start(), never a new start, or a run that did start runs twice (two
-        invoices)."""
+        """Starts the operation's run for record (saved) on connection (one with a qube_id) and
+        returns the run row, or returns the record's run there that hasn't ended (run.reused),
+        sending its start again while unconfirmed. The README's "Writing an operation" says how a
+        refusal, a raising input and no answer leave the row."""
         if not cls._made_by_qube_sync(connection):
             raise NotConnected(
                 "QuBe Sync: %s.start needs a connection QuBe Sync has made (one with a qube_id): "
@@ -106,26 +97,66 @@ class Operation(object):
         if not cls.slug or not cls.workflow:
             raise NotImplementedError("%s needs its workflow and slug" % cls.__name__)
 
+        run, input_error = cls._claim_run(record, connection)
+        if input_error is not None:
+            raise input_error
+        if not run.reused:
+            return cls._send_start(run, run.input)
+        if cls._unconfirmed_start(run):
+            run = cls._send_start(run, run.input)
+            run.reused = True
+        return run
+
+    @classmethod
+    def _claim_run(cls, record, connection):
+        # type: (Any, Any) -> Any
+        # Under the connection row's lock, so a double click finds the first click's row.
+        # Returns (run, error an input raised): the failed row commits before it's raised.
         store = connection._kit_store
-        record_id = store.key_for(record)[1]
-        run = store.create(
+        type_name, record_id = store.key_for(record)
+        with store.locked(connection) as locked:
+            going = store.first(
+                RUN,
+                order=["-created_at", "-id"],
+                connection_id=locked.id,
+                record_type=type_name,
+                record_id=record_id,
+                operation=cls.slug,
+            )
+            if going is not None and not going.ended():
+                going.reused = True
+                return going, None
+            return cls._new_run(store, record, locked)
+
+    @classmethod
+    def _new_run(cls, store, record, connection):
+        # type: (Any, Any, Any) -> Any
+        run = store.new(
             RUN,
             connection_id=connection.id,
             operation=cls.slug,
             record=record,
-            reference="%s-%s-%s" % (cls.slug, record_id, uuid.uuid4()),
+            reference="%s-%s-%s" % (cls.slug, store.key_for(record)[1], uuid.uuid4()),
             state="starting",
             revision=0,
         )
+        operation = cls(record, run)
+        operation._connection = connection  # an unsaved run may not reach it yet
         try:
             # As JSON reads it back, so a retry sends exactly what the first start did.
-            input = json.loads(json.dumps(cls(record, run).input()))
-        except Exception:  # an input not written yet (NotImplementedError), too
-            cls._mark_failed(run)
-            raise
-        run.input = input
-        store.save(run, fields=["input"])
-        return cls._send_start(run, input)
+            run.input = json.loads(json.dumps(operation.input()))
+        except Exception as error:  # an input not written yet (NotImplementedError), too
+            run.state = "failed"
+            store.save(run)
+            return run, error
+        store.save(run)
+        return run, None
+
+    # Sent, but no answer from QuBe Sync yet.
+    @staticmethod
+    def _unconfirmed_start(run):
+        # type: (Any) -> bool
+        return not run.qube_run_id and run.state == "starting"
 
     @classmethod
     def retry_start(cls, run):
@@ -156,10 +187,17 @@ class Operation(object):
                 webhook_url=run.webhook_url,
             )
         except APIError as error:
-            if 400 <= error.status < 500:  # refused: nothing started
+            if cls._refused(error):
                 cls._mark_failed(run)
             raise
         return cls._record_start(run, started if isinstance(started, dict) else {})
+
+    # A 4xx started nothing, but a 409 is the Idempotency-Key in use by another call still in
+    # flight (the other click), which may land: that run stays "starting".
+    @staticmethod
+    def _refused(error):
+        # type: (APIError) -> bool
+        return 400 <= error.status < 500 and error.status != 409
 
     @classmethod
     def _mark_failed(cls, run):
@@ -219,7 +257,7 @@ class Operation(object):
         """The connection the run is on (a Connection): where the QuickBooks ids an ending
         carries are kept (connection.link), and where the ones the input names are read
         (connection.qb_id_for)."""
-        return self.run.connection
+        return self.__dict__.get("_connection") or self.run.connection
 
     def input(self):
         # type: () -> Mapping[str, Any]

@@ -123,6 +123,11 @@ class World(object):
         moment = self.Run._kit_store.now() - datetime.timedelta(seconds=seconds)
         return self.update(row, created_at=moment)
 
+    def quiet(self, row, seconds):
+        """row as if last updated seconds ago."""
+        moment = self.Run._kit_store.now() - datetime.timedelta(seconds=seconds)
+        return self.update(row, updated_at=moment)
+
 
 class DjangoWorld(World):
     name = "django"
@@ -184,6 +189,12 @@ class DjangoWorld(World):
 
     def key(self, record):
         return record._meta.label
+
+    def release(self):
+        """After work on another thread: its database connection closed."""
+        from django.db import connection
+
+        connection.close()
 
 
 class SQLAlchemyWorld(World):
@@ -270,6 +281,9 @@ class SQLAlchemyWorld(World):
     def key(self, record):
         return "kit_sqla.%s" % type(record).__name__
 
+    def release(self):
+        self.Session.remove()
+
 
 WORLDS = {"django": (DjangoWorld, "django"), "sqlalchemy": (SQLAlchemyWorld, "sqlalchemy")}
 _made = {}
@@ -308,6 +322,9 @@ class Response(object):
 class Driver(object):
     """Sends requests to one adapter. account signs in as that account (None: signed out)."""
 
+    def reset(self):
+        """Before each test: forget what the last one signed in or kept."""
+
     world_name = "sqlalchemy"
     # What the adapter answers a signed-out request: Django's login_required redirects.
     signed_out = (401,)
@@ -325,6 +342,7 @@ class DjangoDriver(Driver):
 
         self.world = world
         self.Client = Client
+        self._signed_in = None
 
     def current_account(self, request):
         user = getattr(request, "user", None)
@@ -333,10 +351,17 @@ class DjangoDriver(Driver):
         return self.world.Account.objects.filter(user=user).first()
 
     def _client(self, account):
-        client = self.Client()
-        if account is not None:
+        # One client per signed-in account, so its session lasts from a POST to the next page.
+        if account is None:
+            return self.Client()
+        if self._signed_in is None or self._signed_in[0] != account.pk:
+            client = self.Client()
             client.force_login(account.user)
-        return client
+            self._signed_in = (account.pk, client)
+        return self._signed_in[1]
+
+    def reset(self):
+        self._signed_in = None
 
     def _headers(self, headers):
         meta = {}
@@ -381,6 +406,7 @@ class FlaskDriver(Driver):
 
         app = Flask("kit_flask_test")
         app.config["TESTING"] = True
+        app.secret_key = "kit-tests"  # Flask's session keeps a route's message for the page
         qube_flask.init_app(app, sign_in=require_user)
 
         @app.teardown_appcontext
@@ -396,7 +422,11 @@ class FlaskDriver(Driver):
             )
 
         self.app = app
-        self.client = app.test_client()
+        self.reset()
+
+    def reset(self):
+        # A fresh cookie jar (Flask's session) for each test.
+        self.client = self.app.test_client()
 
     def current_account(self, request):
         user = request.headers.get("X-User")
@@ -456,6 +486,9 @@ class FastAPIDriver(Driver):
         self.app = app
         self.client = TestClient(app)
 
+    def reset(self):
+        self.client.cookies.clear()
+
     def current_account(self, request):
         user = getattr(request.state, "user", None)
         return self.world.Session().query(self.world.Account).filter_by(user=user).first() if user else None
@@ -476,7 +509,10 @@ class FastAPIDriver(Driver):
         return self._wrap(response)
 
     def get(self, path, params=None, account=None, headers=None):
-        return self._wrap(self.client.get(path, params=params or {}, headers=self._headers(account, headers), follow_redirects=False))
+        response = self._wrap(self.client.get(path, params=params or {}, headers=self._headers(account, headers), follow_redirects=False))
+        if 'document.cookie = "%s=; Max-Age=0' % kit.ERROR_KEY in response.text:
+            self.client.cookies.delete(kit.ERROR_KEY)  # what the template's script does in a browser
+        return response
 
     def _wrap(self, response):
         return Response(response.status_code, response.text, dict(response.headers))
@@ -501,5 +537,6 @@ def make_driver(name):
     if name not in _drivers:
         _drivers[name] = cls(made)
     driver = _drivers[name]
+    driver.reset()
     kit.configure(current_account=driver.current_account)
     return driver, made

@@ -73,7 +73,11 @@ class Run(RunMixin, models.Model):
         db_table = "qube_runs"
         constraints = [models.UniqueConstraint(fields=["reference"], name="index_qube_runs_on_reference")]
         indexes = [
-            models.Index(fields=["record_type", "record_id", "operation", "created_at"], name="qube_runs_record_operation")
+            models.Index(fields=["record_type", "record_id", "operation", "created_at"], name="qube_runs_record_operation"),
+            # For SyncStatus and the connection's scopes.
+            models.Index(
+                fields=["connection", "record_type", "record_id", "operation", "state"], name="qube_runs_connection_state"
+            ),
         ]
 
     def __str__(self):
@@ -132,6 +136,8 @@ class QuickbooksRecord(QuickbooksRecordMixin, models.Model):
                 name="index_qube_quickbooks_records_on_record",
             ),
         ]
+        # A record's link on a connection whatever its kind: SyncStatus and the scopes.
+        indexes = [models.Index(fields=["connection", "record_type", "record_id"], name="qube_qb_records_connection")]
 
     def save(self, *args, **kwargs):
         # The family always follows the kind, so a save of the kind alone writes it too.

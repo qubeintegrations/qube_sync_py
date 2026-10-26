@@ -13,6 +13,7 @@ This is QuBe Sync's copy, updated with the package. For other markup, put your o
 templates/qubesync/question.html in a template directory Django searches first (DIRS, or an
 app above qubesync.django in INSTALLED_APPS).
 {% endcomment %}
+{% if error %}<p class="qube-error">{{ error }}</p>{% endif %}
 {% if question %}
 <section class="qube-question">
   <p class="qube-question-message">{{ question.message }}</p>

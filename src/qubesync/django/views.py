@@ -16,12 +16,16 @@ __all__ = [
     "answer",
     "search",
     "retry_start",
+    "redeliver",
     "response",
 ]
 
 
-def response(reply):
-    # type: (kit.Reply) -> HttpResponse
+def response(reply, request=None):
+    # type: (kit.Reply, Optional[HttpRequest]) -> HttpResponse
+    if reply.error is not None:
+        if not _keep_error(request, reply.error):
+            return response(reply.fallback)
     if reply.location is not None:
         redirect = HttpResponseRedirect(reply.location)
         redirect.status_code = reply.status
@@ -33,11 +37,25 @@ def response(reply):
     return HttpResponse(status=reply.status)
 
 
+def _keep_error(request, message):
+    # type: (Optional[HttpRequest], str) -> bool
+    # In the session, for the templates to show once.
+    session = getattr(request, "session", None)
+    if session is None:
+        return False
+    session[kit.ERROR_KEY] = message
+    return True
+
+
 @require_POST
 def connect(request):
     # type: (HttpRequest) -> HttpResponse
     """POST quickbooks/connections: qubesync.kit.connect."""
-    return response(kit.connect(request, request.POST))
+    from django.conf import settings
+
+    referer = request.headers.get("Referer")
+    reply = kit.connect(request, request.POST, referer, request.get_host(), production=not settings.DEBUG)
+    return response(reply)
 
 
 @require_POST
@@ -69,7 +87,7 @@ def _receive(request, kind, id):
     body = _raw_body(request)  # the raw bytes the signature is over
     # The enqueue setting's default is the kit's worker thread, which closes its database
     # connection after each job, as a request does.
-    return response(kit.receive(kind, id, body, signature))
+    return response(kit.receive(kind, id, body, signature, path=request.path))
 
 
 def _raw_body(request):
@@ -92,7 +110,7 @@ def answer(request, id):
     """POST qube/questions/runs/<id>: qubesync.kit.answer. Django's CSRF middleware checks the
     token the question template writes in each form."""
     referer = request.headers.get("Referer")
-    return response(kit.answer(request, id, request.POST, referer, request.get_host()))
+    return response(kit.answer(request, id, request.POST, referer, request.get_host()), request)
 
 
 @require_GET
@@ -107,4 +125,12 @@ def retry_start(request, id):
     # type: (HttpRequest, str) -> HttpResponse
     """POST qube/runs/<id>/retry_start: qubesync.kit.retry_start."""
     referer = request.headers.get("Referer")
-    return response(kit.retry_start(request, id, referer, request.get_host()))
+    return response(kit.retry_start(request, id, referer, request.get_host()), request)
+
+
+@require_POST
+def redeliver(request, id):
+    # type: (HttpRequest, str) -> HttpResponse
+    """POST qube/runs/<id>/redeliver: qubesync.kit.redeliver."""
+    referer = request.headers.get("Referer")
+    return response(kit.redeliver(request, id, referer, request.get_host()), request)

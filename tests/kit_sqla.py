@@ -1,7 +1,7 @@
 """SQLAlchemy models for the Flask and FastAPI tests: an account, its invoices and its
 customers, none with a QuBe column, on a SQLite file (so each thread has a connection of its
 own), in WAL mode with SQLAlchemy's recipe for SQLite's transactions (pysqlite's own handling
-breaks SAVEPOINT)."""
+breaks SAVEPOINT); or with KIT_PG_URL, on PostgreSQL's kit_sqla database."""
 import os
 import tempfile
 
@@ -11,21 +11,24 @@ from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker
 import qubesync.kit.sqlalchemy as qube_tables
 
 Base = declarative_base()
-engine = create_engine(
-    "sqlite:///" + os.path.join(tempfile.mkdtemp(), "kit.sqlite3"), connect_args={"check_same_thread": False}
-)
+PG_URL = os.environ.get("KIT_PG_URL")
 
+if PG_URL:
+    engine = create_engine(PG_URL.replace("postgresql://", "postgresql+psycopg2://", 1) + "/kit_sqla")
+else:
+    engine = create_engine(
+        "sqlite:///" + os.path.join(tempfile.mkdtemp(), "kit.sqlite3"), connect_args={"check_same_thread": False}
+    )
 
-@event.listens_for(engine, "connect")
-def _connect(dbapi_connection, record):
-    dbapi_connection.isolation_level = None
-    dbapi_connection.execute("PRAGMA journal_mode=WAL")
-    dbapi_connection.execute("PRAGMA busy_timeout=5000")
+    @event.listens_for(engine, "connect")
+    def _connect(dbapi_connection, record):
+        dbapi_connection.isolation_level = None
+        dbapi_connection.execute("PRAGMA journal_mode=WAL")
+        dbapi_connection.execute("PRAGMA busy_timeout=5000")
 
-
-@event.listens_for(engine, "begin")
-def _begin(connection):
-    connection.exec_driver_sql("BEGIN")
+    @event.listens_for(engine, "begin")
+    def _begin(connection):
+        connection.exec_driver_sql("BEGIN")
 
 
 Session = scoped_session(sessionmaker(bind=engine, expire_on_commit=False))

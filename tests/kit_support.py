@@ -114,9 +114,16 @@ class FakeClient(object):
     def called(self, name):
         return [call for call in self.calls if call[0] == name]
 
-    def create_connection(self, *, webhook_url, name=None):
-        made = self._call("create_connection", webhook_url=webhook_url, name=name)
+    def create_connection(self, *, webhook_url, name=None, type=None):
+        kwargs = {"webhook_url": webhook_url, "name": name}
+        if type is not None:
+            kwargs["type"] = type
+        made = self._call("create_connection", **kwargs)
         return made or {"id": "conn-q-1", "links": {"onboarding": ONBOARDING}}
+
+    def redeliver_run(self, connection_id, run_id):
+        sent = self._call("redeliver_run", connection_id, run_id)
+        return sent or {"run_id": run_id, "event": "workflow_run.completed", "revision": 3, "webhook_url": "x"}
 
     def update_connection(self, id, *, webhook_url=None, name=None):
         return self._call("update_connection", id, webhook_url=webhook_url) or {"id": id}

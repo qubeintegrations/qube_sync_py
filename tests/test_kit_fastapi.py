@@ -73,6 +73,7 @@ def test_the_combined_router_names_every_route_under_its_prefix(app):
         ("qubesync_question", "/qube-sync/qube/questions/runs/7"),
         ("qubesync_question_search", "/qube-sync/qube/questions/runs/7/search"),
         ("qubesync_retry_start", "/qube-sync/qube/runs/7/retry_start"),
+        ("qubesync_redeliver", "/qube-sync/qube/runs/7/redeliver"),
     ):
         assert api.url_path_for(name, id="7") == path
 
@@ -111,9 +112,70 @@ def test_each_route_removes_its_threads_session(app, world, account, monkeypatch
     http = app[0]
     removed = []
     session = world.Session
-    monkeypatch.setattr(session, "remove", lambda: removed.append(True))
+    remove = session.remove
+    monkeypatch.setattr(session, "remove", lambda: (removed.append(True), remove()))
 
     response = http.post("/quickbooks/connections/0/onboarding", account=account)
 
     assert response.status == 404
     assert removed
+
+
+def test_simulated_connect_follows_app_debug_unless_production_is_set(app, world, account):
+    http = app[0]
+    assert http.post("/quickbooks/connections", {"simulated": "1"}, account=account).status == 404
+
+    http.app.debug = True
+    try:
+        assert http.post("/quickbooks/connections", {"simulated": "1"}, account=account).status == 303
+        kit.configure(production=True)
+        assert http.post("/quickbooks/connections", {"simulated": "1"}, account=account).status == 404
+    finally:
+        http.app.debug = False
+
+
+def test_with_session_middleware_the_message_goes_in_the_session(world, account, app):
+    from starlette.middleware.sessions import SessionMiddleware
+
+    invoice = world.invoice(account)
+    run = world.run(invoice, world.connection(account), question=QUESTION, links={"decisions": DECISIONS})
+    api = FastAPI()
+    api.add_middleware(SessionMiddleware, secret_key="kit-tests")
+    api.include_router(qube_fastapi.router(dependencies=[Depends(signed_in)]))
+
+    @api.get("/invoices/{id}")
+    def page(id: int, request: Request):
+        from fastapi.responses import HTMLResponse
+
+        try:
+            return HTMLResponse(qube_fastapi.run_status_html(request, world.find(world.Invoice, id), "create_invoice"))
+        finally:
+            world.Session.remove()
+
+    client = TestClient(api)
+    headers = {"x-user": account.user, "referer": "/invoices/%s" % invoice.id}
+    response = client.post("/qube/questions/runs/%s" % run.id, data={"choice": "nope"}, headers=headers, follow_redirects=False)
+
+    assert response.status_code == 303
+    assert kit.ERROR_KEY not in response.cookies
+    assert client.get("/invoices/%s" % invoice.id).text.count("qube-error") == 1
+    assert "qube-error" not in client.get("/invoices/%s" % invoice.id).text
+
+
+def test_without_a_session_the_message_is_a_short_cookie_the_page_clears(app, world, account):
+    http = app[0]
+    invoice = world.invoice(account)
+    run = world.run(invoice, world.connection(account), question=QUESTION, links={"decisions": DECISIONS})
+
+    response = http.client.post(
+        "/qube/questions/runs/%s" % run.id,
+        data={"choice": "nope"},
+        headers={"x-user": account.user, "referer": "/invoices/%s" % invoice.id},
+        follow_redirects=False,
+    )
+
+    cookie = response.headers["set-cookie"]
+    assert cookie.startswith("%s=" % kit.ERROR_KEY) and "Max-Age=60" in cookie and "Path=/" in cookie
+    shown = http.get("/invoices/%s" % invoice.id, account=account).text
+    assert shown.count('<p class="qube-error">This question has changed; reload.</p>') == 1
+    assert 'document.cookie = "%s=; Max-Age=0; Path=/; SameSite=Lax"' % kit.ERROR_KEY in shown
