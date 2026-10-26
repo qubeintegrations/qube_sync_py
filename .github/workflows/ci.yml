@@ -27,6 +27,11 @@ jobs:
         run: |
           python -m pip install mypy
           python -m mypy --strict --warn-unused-ignores tests/typecheck/sample.py
+      - name: mypy on the generated workflow types (the golden file, and a served document's)
+        if: matrix.python == '3.13'
+        run: |
+          python -c "import json, qubesync.workflow_types as w; print(w.render(json.load(open('tests/fixtures/workflow_types/served.json')), source='https://qubesync.com/api/v2/workflows/types').python, end='')" > served_workflows.py
+          MYPYPATH=tests/fixtures/workflow_types python -m mypy --strict --warn-unused-ignores tests/typecheck/workflows.py served_workflows.py
       - run: python -m build
   kit:
     # The integration kit's adapters, on the oldest and newest framework each Python takes:

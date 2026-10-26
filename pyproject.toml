@@ -28,6 +28,10 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
+# `qubesync workflows`: writes your app's typed workflow starts (qubesync.workflow_types).
+[project.scripts]
+qubesync = "qubesync.workflow_types._cli:main"
+
 # The integration kit's adapters (qubesync.django, qubesync.flask, qubesync.fastapi), each
 # importing its framework only when it's imported: qubesync and qubesync.kit need none.
 [project.optional-dependencies]
