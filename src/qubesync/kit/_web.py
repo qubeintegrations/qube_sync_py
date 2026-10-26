@@ -22,7 +22,6 @@ from urllib.parse import urlparse
 from .. import webhooks
 from ..v2 import APIError
 from ._defaults import client
-from ._errors import CONFIG_FILE
 from ._job import CONNECTION_KIND, RUN_KIND, enqueue_in_process
 from ._operation import NETWORK_ERRORS
 from ._settings import settings
@@ -265,19 +264,10 @@ def authorized_run(request, run_id, action):
     operation and its record are there and authorize_question(request, record, run) says
     True; else the Reply that refuses it, logged. Only True lets it through: a truthy record,
     or a forgotten return, doesn't. A refusal answers as a run that doesn't exist does (404),
-    so a user can't tell another customer's run is there. With neither authorize_question nor
-    current_account set, nothing can say who may, so it's 403 until one is."""
+    so a user can't tell another customer's run is there. The default authorize_question reads
+    current_account, which raises NotConfigured while it isn't set, as every unset setting
+    does at its first use."""
     config = settings()
-    if not _authorization_set_up(config):
-        log.warning(
-            "QuBe Sync: refused %s for run %s: neither authorize_question nor current_account is set, "
-            "so no one may; set current_account= in qubesync.kit.configure, in %s",
-            action,
-            run_id,
-            CONFIG_FILE,
-        )
-        return Reply(403, text="Answering questions isn't set up yet.")
-
     store = current_store()
     found = store.get(RUN, run_id)
     operation = config.operation_class(found.operation) if found is not None else None
@@ -297,13 +287,6 @@ def _record_for(store, operation, run):
         return operation.record_for(run)
     except store.not_found_errors:  # a find_record written with get()
         return None
-
-
-# Something can say who may act on a run: authorize_question, or current_account for the
-# default.
-def _authorization_set_up(config):
-    # type: (Any) -> bool
-    return config.is_set("authorize_question") or config.is_set("current_account")
 
 
 def answer(request, run_id, form, referer=None, host=None):

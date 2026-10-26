@@ -479,13 +479,11 @@ class TestAnswer:
         assert self.answer(http, run, {"choice": "use:1"}, account, invoice).status == 404
         assert client.called("answer") == []
 
-    def test_answers_403_while_neither_authorize_question_nor_current_account_is_set(self, http, account, invoice, run, client, caplog):
+    def test_raises_naming_the_config_file_while_current_account_isnt_set(self, http, account, invoice, run, client):
         kit.configure(current_account=None)
 
-        response = self.answer(http, run, {"choice": "use:1"}, account, invoice)
-
-        assert response.status == 403
-        assert "neither authorize_question nor current_account is set" in caplog.text
+        with pytest.raises(kit.NotConfigured, match=r"current_account.*quickbooks_desktop/config\.py"):
+            self.answer(http, run, {"choice": "use:1"}, account, invoice)
         assert client.called("answer") == []
 
     def test_answers_404_when_find_record_returns_none(self, http, account, invoice, run, monkeypatch):
@@ -573,12 +571,12 @@ class TestSearch:
         assert (response.status, response.json()) == (404, [])
         assert client.called("search") == []
 
-    def test_answers_403_while_neither_is_set(self, http, account, run):
+    def test_raises_naming_the_config_file_while_current_account_isnt_set(self, http, account, run, client):
         kit.configure(current_account=None)
 
-        response = self.search(http, run, "river", account)
-
-        assert (response.status, response.json()) == (403, [])
+        with pytest.raises(kit.NotConfigured, match=r"current_account.*quickbooks_desktop/config\.py"):
+            self.search(http, run, "river", account)
+        assert client.called("search") == []
 
     def test_is_behind_the_apps_sign_in(self, http, run, client):
         signed_out(http, http.get("/qube/questions/runs/%s/search" % run.id, {"field": "list_id", "q": "river"}))
@@ -635,6 +633,18 @@ class TestRetryStart:
 
     def test_answers_404_for_a_run_that_isnt_there(self, http, account):
         assert http.post("/qube/runs/0/retry_start", account=account).status == 404
+
+    def test_raises_naming_the_config_file_while_current_account_isnt_set(self, http, account, invoice, run, client):
+        kit.configure(current_account=None)
+
+        with pytest.raises(kit.NotConfigured, match=r"current_account.*quickbooks_desktop/config\.py"):
+            self.retry(http, run, account, invoice)
+        assert client.called("start_run") == []
+
+    def test_uses_an_authorize_question_the_app_sets_even_without_current_account(self, http, world, invoice, run, client):
+        kit.configure(current_account=None, authorize_question=lambda request, record, asked: True)
+
+        assert self.retry(http, run, world.account("Staff"), invoice).status == 303
 
     def test_is_behind_the_apps_sign_in(self, http, run, client):
         signed_out(http, http.post("/qube/runs/%s/retry_start" % run.id))

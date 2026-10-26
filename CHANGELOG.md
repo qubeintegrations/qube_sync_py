@@ -50,8 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never-connected connection unless `new=1`), `POST quickbooks/connections/<id>/onboarding`
   (404 unless the signed-in account owns it), `POST webhooks/qube/runs/<id>` and
   `POST webhooks/qube/connections/<id>` (401, 404, 413, 200, or 503 when the enqueue fails),
-  `POST qube/questions/runs/<id>` and `GET .../search` (403 while neither authorize_question nor
-  current_account is set, 404 when refused, 409 when the question changed), and
+  `POST qube/questions/runs/<id>` and `GET .../search` (404 when refused, 409 when the question
+  changed; an unset `current_account` raises `NotConfigured` there, as on connect), and
   `POST qube/runs/<id>/retry_start`.
 - `qubesync.django` (extra `django`): an installed app with the models and migration,
   `qubesync.django.urls`, the templates and `{% load qubesync %}` (`{% qube_question %}`,
