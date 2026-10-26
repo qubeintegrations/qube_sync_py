@@ -278,9 +278,10 @@ def authorized_run(request, run_id, action):
         )
         return Reply(403, text="Answering questions isn't set up yet.")
 
-    found = current_store().get(RUN, run_id)
+    store = current_store()
+    found = store.get(RUN, run_id)
     operation = config.operation_class(found.operation) if found is not None else None
-    record = operation.record_for(found) if operation is not None else None
+    record = _record_for(store, operation, found) if operation is not None else None
     if record is None:
         return Reply(404, text="Not found.")
 
@@ -288,6 +289,14 @@ def authorized_run(request, run_id, action):
         log.warning("QuBe Sync: refused %s for run %s: authorize_question said no", action, found.id)
         return Reply(404, text="Not found.")
     return found, operation, record
+
+
+def _record_for(store, operation, run):
+    # type: (Any, Any, Any) -> Any
+    try:
+        return operation.record_for(run)
+    except store.not_found_errors:  # a find_record written with get()
+        return None
 
 
 # Something can say who may act on a run: authorize_question, or current_account for the

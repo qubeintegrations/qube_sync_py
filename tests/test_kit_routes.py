@@ -493,6 +493,16 @@ class TestAnswer:
 
         assert self.answer(http, run, {"choice": "use:1"}, account, invoice).status == 404
 
+    def test_answers_404_when_find_record_raises_not_found(self, http, world, account, invoice, run, monkeypatch):
+        error = world.Run._kit_store.not_found_errors[0]
+
+        def missing(cls, id):
+            raise error()
+
+        monkeypatch.setattr(CreateInvoice, "find_record", classmethod(missing))
+
+        assert self.answer(http, run, {"choice": "use:1"}, account, invoice).status == 404
+
     def test_answers_409_for_a_run_that_has_stopped_asking(self, http, world, account, invoice, run):
         run = world.update(run, question=None, links=None)
 
