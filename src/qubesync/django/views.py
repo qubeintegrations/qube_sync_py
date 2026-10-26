@@ -1,16 +1,23 @@
 """The routes' views. urls.py mounts them; each hands the request to qubesync.kit and turns
 its Reply into a response."""
-from typing import Any
+from typing import Optional
 
-from django.db import close_old_connections
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
 from .. import kit
-from ..kit import _defaults
 
-__all__ = ["webhook", "connect", "answer", "search", "response"]
+__all__ = [
+    "connect",
+    "onboarding",
+    "run_webhook",
+    "connection_webhook",
+    "answer",
+    "search",
+    "retry_start",
+    "response",
+]
 
 
 def response(reply):
@@ -26,35 +33,47 @@ def response(reply):
     return HttpResponse(status=reply.status)
 
 
-def _in_process(operation, record_id, body):
-    # type: (str, str, str) -> None
-    """The enqueue setting's default under Django: the kit's worker thread, with a database
-    connection of its own, as a request would have."""
-    _defaults.default_queue().submit(_job, operation, record_id, body)
+@require_POST
+def connect(request):
+    # type: (HttpRequest) -> HttpResponse
+    """POST quickbooks/connections: qubesync.kit.connect."""
+    return response(kit.connect(request, request.POST))
 
 
-def _job(operation, record_id, body):
-    # type: (str, str, str) -> None
-    close_old_connections()
-    try:
-        kit.run(operation, record_id, body)
-    finally:
-        close_old_connections()
+@require_POST
+def onboarding(request, id):
+    # type: (HttpRequest, str) -> HttpResponse
+    """POST quickbooks/connections/<id>/onboarding: qubesync.kit.onboarding."""
+    return response(kit.onboarding(request, id))
 
 
 @csrf_exempt  # QuBe Sync signs its webhooks instead
 @require_POST
-def webhook(request, operation, record_id):
+def run_webhook(request, id):
+    # type: (HttpRequest, str) -> HttpResponse
+    """POST webhooks/qube/runs/<id>: qubesync.kit.receive."""
+    return _receive(request, "run", id)
+
+
+@csrf_exempt
+@require_POST
+def connection_webhook(request, id):
+    # type: (HttpRequest, str) -> HttpResponse
+    """POST webhooks/qube/connections/<id>: qubesync.kit.receive."""
+    return _receive(request, "connection", id)
+
+
+def _receive(request, kind, id):
     # type: (HttpRequest, str, str) -> HttpResponse
-    """POST webhooks/qube/<operation>/<record id>: qubesync.kit.receive."""
-    enqueue = None if kit.settings().is_set("enqueue") else _in_process
     signature = request.headers.get(kit.SIGNATURE_HEADER)
     body = _raw_body(request)  # the raw bytes the signature is over
-    return response(kit.receive(operation, record_id, body, signature, enqueue=enqueue))
+    # The enqueue setting's default is the kit's worker thread, which closes its database
+    # connection after each job, as a request does.
+    return response(kit.receive(kind, id, body, signature))
 
 
 def _raw_body(request):
-    # type: (HttpRequest) -> Any
+    # type: (HttpRequest) -> Optional[bytes]
     """The body, read from the request's stream rather than request.body, so Django's
     DATA_UPLOAD_MAX_MEMORY_SIZE (2.5 MB by default) doesn't refuse a webhook the kit takes (up
     to MAX_WEBHOOK_BODY, 5 MB), whatever its content type. None when it's over that: a 413."""
@@ -68,25 +87,24 @@ def _raw_body(request):
 
 
 @require_POST
-def connect(request):
-    # type: (HttpRequest) -> HttpResponse
-    """POST quickbooks/connect: qubesync.kit.connect, for the current_account setting's
-    account."""
-    return response(kit.connect(request))
-
-
-@require_POST
-def answer(request, operation, record_id):
-    # type: (HttpRequest, str, str) -> HttpResponse
-    """POST qube/questions/<operation>/<record id>: qubesync.kit.answer. Django's CSRF
-    middleware checks the token the question template writes in each form."""
+def answer(request, id):
+    # type: (HttpRequest, str) -> HttpResponse
+    """POST qube/questions/runs/<id>: qubesync.kit.answer. Django's CSRF middleware checks the
+    token the question template writes in each form."""
     referer = request.headers.get("Referer")
-    reply = kit.answer(request, operation, record_id, request.POST, referer, request.get_host())
-    return response(reply)
+    return response(kit.answer(request, id, request.POST, referer, request.get_host()))
 
 
 @require_GET
-def search(request, operation, record_id):
-    # type: (HttpRequest, str, str) -> Any
-    """GET qube/questions/<operation>/<record id>/search: qubesync.kit.search."""
-    return response(kit.search(request, operation, record_id, request.GET))
+def search(request, id):
+    # type: (HttpRequest, str) -> HttpResponse
+    """GET qube/questions/runs/<id>/search: qubesync.kit.search."""
+    return response(kit.search(request, id, request.GET))
+
+
+@require_POST
+def retry_start(request, id):
+    # type: (HttpRequest, str) -> HttpResponse
+    """POST qube/runs/<id>/retry_start: qubesync.kit.retry_start."""
+    referer = request.headers.get("Referer")
+    return response(kit.retry_start(request, id, referer, request.get_host()))

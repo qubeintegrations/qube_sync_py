@@ -1,76 +1,61 @@
-"""SQLAlchemy models for the Flask and FastAPI tests: an account that keeps its connection, and
-an invoice that keeps its run. A file database, so each thread has a connection of its own."""
+"""SQLAlchemy models for the Flask and FastAPI tests: an account, its invoices and its
+customers, none with a QuBe column, on a SQLite file (so each thread has a connection of its
+own), in WAL mode with SQLAlchemy's recipe for SQLite's transactions (pysqlite's own handling
+breaks SAVEPOINT)."""
 import os
 import tempfile
 
-from sqlalchemy import JSON, Boolean, Column, ForeignKey, Integer, String, create_engine
+from sqlalchemy import Column, ForeignKey, Integer, String, create_engine, event
 from sqlalchemy.orm import declarative_base, scoped_session, sessionmaker
 
-import qubesync.kit.sqlalchemy as qube_sqla
+import qubesync.kit.sqlalchemy as qube_tables
 
 Base = declarative_base()
-engine = create_engine("sqlite:///" + os.path.join(tempfile.mkdtemp(), "kit.sqlite3"))
-Session = scoped_session(sessionmaker(bind=engine))
+engine = create_engine(
+    "sqlite:///" + os.path.join(tempfile.mkdtemp(), "kit.sqlite3"), connect_args={"check_same_thread": False}
+)
+
+
+@event.listens_for(engine, "connect")
+def _connect(dbapi_connection, record):
+    dbapi_connection.isolation_level = None
+    dbapi_connection.execute("PRAGMA journal_mode=WAL")
+    dbapi_connection.execute("PRAGMA busy_timeout=5000")
+
+
+@event.listens_for(engine, "begin")
+def _begin(connection):
+    connection.exec_driver_sql("BEGIN")
+
+
+Session = scoped_session(sessionmaker(bind=engine, expire_on_commit=False))
 
 
 class Account(Base):
     __tablename__ = "accounts"
     id = Column(Integer, primary_key=True)
     user = Column(String(40))
-    qube_connection_id = Column(String(64))
-    qube_connection_revision = Column(Integer)
-    connected = Column(Boolean, default=False)
+    name = Column(String(100))
 
 
 class Invoice(Base):
     __tablename__ = "invoices"
     id = Column(Integer, primary_key=True)
     account_id = Column(Integer, ForeignKey("accounts.id"))
-    qube_reference = Column(String(200))
-    qube_revision = Column(Integer)
-    qube_question = Column(JSON)
-    qube_links = Column(JSON)
+    number = Column(String(20))
     status = Column(String(20), default="new")
+
+
+class Customer(Base):
+    __tablename__ = "customers"
+    id = Column(Integer, primary_key=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"))
+    name = Column(String(100))
 
 
 def reset():
     Session.remove()
+    qube_tables.metadata.drop_all(engine)
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
-
-
-def make_classes(base_operation=qube_sqla.Operation, base_connection=qube_sqla.ConnectionEvents, on_find=None):
-    class CreateInvoice(base_operation):
-        workflow = "add_transaction"
-        slug = "create_invoice"
-
-        @classmethod
-        def find_record(cls, record_id):
-            if on_find:
-                on_find()
-            return Session().get(Invoice, int(record_id))
-
-        def input(self):
-            return {"operation": "invoice.create", "params": {"ref_number": str(self.record.id)}}
-
-        def ended(self, event):
-            self.record.status = "sent"
-            self.save_record(["status"])
-
-    class Connection(base_connection):
-        @classmethod
-        def find_record(cls, record_id):
-            return Session().get(Account, int(record_id))
-
-        def connected(self, event):
-            self.account.connected = True
-            self.save_record(["connected"])
-
-    return CreateInvoice, Connection
-
-
-def add(row):
-    session = Session()
-    session.add(row)
-    session.commit()
-    return row
+    qube_tables.metadata.create_all(engine)

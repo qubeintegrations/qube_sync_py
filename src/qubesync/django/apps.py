@@ -8,17 +8,23 @@ DEFAULT_CONFIG = "quickbooks_desktop.config"
 
 
 class QubeSyncConfig(AppConfig):
-    """qubesync.django in INSTALLED_APPS: the question template, and, once the apps are
-    ready, your quickbooks_desktop/config.py imported, so its qubesync.kit.configure(...)
-    has run before the first request or job. The QUBESYNC_CONFIG Django setting names
-    another module."""
+    """qubesync.django in INSTALLED_APPS: the kit's tables (its models and migrations), the
+    templates and template tags, and, once the apps are ready, the kit's tables registered as
+    Django's and your quickbooks_desktop/config.py imported, so its qubesync.kit.configure(...)
+    has run before the first request or job. The QUBESYNC_CONFIG Django setting names another
+    module."""
 
     name = "qubesync.django"
     label = "qubesync"
     verbose_name = "QuBe Sync"
-    default_auto_field = "django.db.models.AutoField"
+    default_auto_field = "django.db.models.BigAutoField"
 
     def ready(self):
+        from ..kit._store import register_store
+        from .store import STORE
+
+        register_store(STORE)
+
         module = getattr(settings, "QUBESYNC_CONFIG", None)
         if module:
             importlib.import_module(module)

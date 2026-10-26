@@ -1,43 +1,56 @@
-"""QuBe Sync's integration kit, without a framework: the code that's the same for every app,
-so your app keeps only its own (a configure call, an operation class per workflow it starts,
-and a connection class) and updates the rest with `pip install -U qubesync`.
+"""QuBe Sync's integration kit, without a framework: the part of an integration that's the
+same in every app, so your app keeps only its own code and updates the rest with
+`pip install -U qubesync`.
+
+It keeps tables of its own: your customers' connections (an account can have several, one
+per company file), the runs your app starts, the QuickBooks ids it learns, each against its
+connection, and the notifications each run has taken. Django gets them as qubesync.django's
+models and migrations; Flask and FastAPI as the SQLAlchemy models in qubesync.kit.sqlalchemy.
+Your own tables need no QuBe columns.
 
 Your app's code lives in quickbooks_desktop/:
 
-    quickbooks_desktop/config.py          qubesync.kit.configure(...): the one place the kit
-                                          reads your app from
-    quickbooks_desktop/create_invoice.py  an Operation subclass per way it starts a workflow
-    quickbooks_desktop/connection.py      a ConnectionEvents subclass: the account, and the
-                                          connection's four handlers
+    quickbooks_desktop/config.py              qubesync.kit.configure(...): the one place the
+                                              kit reads your app from
+    quickbooks_desktop/create_invoice.py      an Operation subclass per way it starts a workflow
+    quickbooks_desktop/connection_events.py   a ConnectionEvents subclass, for a connection's
+                                              connected, setup_cancelled, stalled and resumed
 
 The routes come from your framework's adapter: qubesync.django, qubesync.flask or
-qubesync.fastapi (pip install "qubesync[django]", say). Nothing here names an operation, a
-workflow or a model, and nothing imports a framework.
+qubesync.fastapi (pip install "qubesync[django]", say). Nothing here imports a framework.
 """
 from ..v2 import APIError, Client
 from . import mapping
-from ._bases import ConnectionEvents, Event, Operation, connection_webhook_url
-from ._defaults import InProcessQueue, MemoryDedupe, client
-from ._job import operation_class, run
-from ._settings import CONFIG_FILE, NotConfigured, Settings, configure, reset, settings
+from ._connection_events import ConnectionEvents
+from ._defaults import CacheDedupe, DatabaseDedupe, InProcessQueue, client, log_retry
+from ._errors import CONFIG_FILE, NotConfigured, NotConnected, NotReady, UnknownOperation
+from ._job import perform, retry_delay, run
+from ._models import family_for
+from ._operation import Operation, without_nils
+from ._settings import Settings, configure, reset, settings
 from ._web import (
     CHANGED,
-    SIGNATURE_HEADER,
     MAX_WEBHOOK_BODY,
+    NOT_STARTING,
+    SIGNATURE_HEADER,
     Reply,
     answer,
     answer_data,
+    authorized_run,
     back,
     choice,
     connect,
-    find_question,
     number,
+    onboarding,
+    owner_answers,
     question_context,
     receive,
     refusal,
+    retry_start,
+    run_status_context,
     search,
 )
-from .mapping import as_date, as_integer, as_number, as_string, dig, get, rows, without_nils
+from .mapping import as_date, as_integer, as_number, as_string, dig, get, rows
 
 __all__ = [
     # settings
@@ -45,31 +58,42 @@ __all__ = [
     "settings",
     "reset",
     "Settings",
-    "NotConfigured",
     "CONFIG_FILE",
+    # errors
+    "NotConfigured",
+    "NotReady",
+    "NotConnected",
+    "UnknownOperation",
     # the bases
     "Operation",
     "ConnectionEvents",
-    "Event",
-    "connection_webhook_url",
+    "family_for",
     # the client
     "client",
+    "log_retry",
     "Client",
     "APIError",
-    # the job, and the defaults of enqueue and dedupe
+    # the job, the default queue and the dedupe stores
     "run",
-    "operation_class",
+    "perform",
+    "retry_delay",
     "InProcessQueue",
-    "MemoryDedupe",
+    "DatabaseDedupe",
+    "CacheDedupe",
     # the routes' work
     "Reply",
     "receive",
     "connect",
+    "onboarding",
     "answer",
     "search",
-    "find_question",
+    "retry_start",
+    "authorized_run",
+    "owner_answers",
     "question_context",
+    "run_status_context",
     "CHANGED",
+    "NOT_STARTING",
     "SIGNATURE_HEADER",
     "MAX_WEBHOOK_BODY",
     # the answer's parts
@@ -80,6 +104,7 @@ __all__ = [
     "back",
     # mapping helpers
     "mapping",
+    "without_nils",
     "get",
     "rows",
     "dig",
@@ -87,5 +112,4 @@ __all__ = [
     "as_number",
     "as_integer",
     "as_date",
-    "without_nils",
 ]

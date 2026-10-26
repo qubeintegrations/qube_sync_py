@@ -1,11 +1,12 @@
 """QuBe Sync's integration kit for Flask: three blueprints, since they go behind different
-things (the webhooks behind nothing, onboarding and the questions behind your sign-in), the
-question template, and Operation and ConnectionEvents bases that save through SQLAlchemy.
+things (the webhooks behind nothing, onboarding and the questions behind your sign-in), and
+the question and run status templates. The kit's tables are the SQLAlchemy models in
+qubesync.kit.sqlalchemy, through your session (the db_session setting).
 
     pip install "qubesync[flask]>=0.4.0"
 
     # app.py, where your Flask app is made
-    import quickbooks_desktop.config  # its qubesync.kit.configure(...)
+    import quickbooks_desktop.config  # its qubesync.kit.configure(..., db_session=db.session)
     import qubesync.flask
     from flask_login import login_required
 
@@ -15,20 +16,24 @@ or, to put each blueprint where you like:
 
     bps = qubesync.flask.blueprints(sign_in=login_required)
     app.register_blueprint(bps.webhooks)
-    app.register_blueprint(bps.connect)
+    app.register_blueprint(bps.connections)
     app.register_blueprint(bps.questions)
 
 The routes, relative to url_prefix:
 
-    POST /quickbooks/connect                        qubesync_connect.connect
-    POST /webhooks/qube/<operation>/<record id>     qubesync_webhooks.webhook (no sign-in, no CSRF)
-    POST /qube/questions/<operation>/<record id>    qubesync_questions.answer
-    GET  /qube/questions/<operation>/<record id>/search  qubesync_questions.search
+    POST /quickbooks/connections                   qubesync_connections.connections
+    POST /quickbooks/connections/<id>/onboarding   qubesync_connections.connection_onboarding
+    POST /webhooks/qube/runs/<id>                  qubesync_webhooks.run_webhook (no sign-in, no CSRF)
+    POST /webhooks/qube/connections/<id>           qubesync_webhooks.connection_webhook (likewise)
+    POST /qube/questions/runs/<id>                 qubesync_questions.question
+    GET  /qube/questions/runs/<id>/search          qubesync_questions.question_search
+    POST /qube/runs/<id>/retry_start               qubesync_questions.retry_start
 
 With Flask-WTF's CSRFProtect set up before the blueprints are registered, the webhooks
 blueprint is exempted from it (QuBe Sync signs its webhooks instead); set up after, call
-csrf.exempt(bps.webhooks) yourself. The answer form carries csrf_token() when Flask-WTF
-provides it.
+csrf.exempt(bps.webhooks) yourself. The templates' forms carry csrf_token() when Flask-WTF
+provides it. init_app registers qube_question(record, operation) and qube_run_status(record,
+operation) as Jinja globals, for a record's page.
 """
 try:
     import flask as _flask  # noqa: F401
@@ -39,12 +44,11 @@ import os
 from collections import namedtuple
 from typing import Any, Callable, Dict, Optional
 
-from flask import Blueprint, current_app, jsonify, redirect, render_template, request
+from flask import Blueprint, current_app, jsonify, redirect, render_template, request, url_for
 from markupsafe import Markup
 
 from .. import kit
-from ..kit import _defaults
-from ..kit.sqlalchemy import ConnectionEvents, Operation
+from ..kit._job import enqueue_in_process
 
 __all__ = [
     "Operation",
@@ -53,16 +57,20 @@ __all__ = [
     "blueprints",
     "init_app",
     "question_context",
+    "run_status_context",
     "question_html",
+    "run_status_html",
     "TEMPLATES",
 ]
 
-# The packaged templates (qubesync/question.html), shared with qubesync.fastapi.
+Operation = kit.Operation
+ConnectionEvents = kit.ConnectionEvents
+
+# The packaged templates (qubesync/question.html, qubesync/run_status.html), shared with
+# qubesync.fastapi.
 TEMPLATES = os.path.join(os.path.dirname(os.path.abspath(kit.__file__)), "templates")
 
-Blueprints = namedtuple("Blueprints", ["webhooks", "connect", "questions"])
-
-TEMPLATE = "qubesync/question.html"
+Blueprints = namedtuple("Blueprints", ["webhooks", "connections", "questions"])
 
 
 def _response(reply):
@@ -76,39 +84,50 @@ def _response(reply):
     return "", reply.status
 
 
-def _in_process(operation, record_id, body):
-    # type: (str, str, str) -> None
-    """The enqueue setting's default under Flask: the kit's worker thread, in an app context
-    of this app's, since the job runs outside this request."""
+def _in_process(delivery):
+    # type: (Dict[str, Any]) -> None
+    """The enqueue setting's default under Flask: the kit's worker thread, each attempt in an
+    app context of this app's, since the job runs outside this request (Flask-SQLAlchemy's
+    db.session needs one)."""
     app = current_app._get_current_object()
 
-    def job():
+    def in_context(work):
+        # type: (Callable[[], None]) -> None
         with app.app_context():
-            kit.run(operation, record_id, body)
+            work()
 
-    _defaults.default_queue().submit(job)
+    enqueue_in_process(delivery, wrap=in_context)
+
+
+def _raw_body():
+    # type: () -> Optional[bytes]
+    # The raw bytes the signature is over, whatever the content type; not request.json. Over
+    # MAX_WEBHOOK_BODY (5 MB) is a 413 without reading it. An app's MAX_CONTENT_LENGTH under
+    # 5 MB refuses first.
+    if (request.content_length or 0) > kit.MAX_WEBHOOK_BODY:
+        return None
+    return request.get_data()
 
 
 def blueprints(sign_in=None, url_prefix=None):
     # type: (Optional[Callable[[Any], Any]], Optional[str]) -> Blueprints
-    """The kit's blueprints: webhooks, connect and questions. sign_in, a view decorator
-    (flask_login's login_required, say), goes on connect, answer and search; without one, put
-    your sign-in on those two blueprints (bp.before_request). current_account and
-    authorize_question (qubesync.kit.configure) decide the rest."""
+    """The kit's blueprints: webhooks, connections and questions. sign_in, a view decorator
+    (flask_login's login_required, say), goes on every route but the webhooks; without one,
+    put your sign-in on the connections and questions blueprints (bp.before_request).
+    current_account and authorize_question (qubesync.kit.configure) decide the rest."""
     guard = sign_in or (lambda view: view)
 
     webhooks = Blueprint("qubesync_webhooks", __name__, url_prefix=url_prefix)
 
-    @webhooks.route("/webhooks/qube/<operation>/<record_id>", methods=["POST"])
-    def webhook(operation, record_id):
-        enqueue = None if kit.settings().is_set("enqueue") else _in_process
-        # The raw bytes the signature is over, whatever the content type; not request.json.
-        # Over MAX_WEBHOOK_BODY (5 MB) is a 413 without reading it. An app's MAX_CONTENT_LENGTH
-        # under 5 MB refuses first.
-        too_big = (request.content_length or 0) > kit.MAX_WEBHOOK_BODY
-        body = None if too_big else request.get_data()
+    @webhooks.route("/webhooks/qube/runs/<id>", methods=["POST"], endpoint="run_webhook")
+    def run_webhook(id):
         signature = request.headers.get(kit.SIGNATURE_HEADER)
-        return _response(kit.receive(operation, record_id, body, signature, enqueue=enqueue))
+        return _response(kit.receive("run", id, _raw_body(), signature, enqueue=_in_process))
+
+    @webhooks.route("/webhooks/qube/connections/<id>", methods=["POST"], endpoint="connection_webhook")
+    def connection_webhook(id):
+        signature = request.headers.get(kit.SIGNATURE_HEADER)
+        return _response(kit.receive("connection", id, _raw_body(), signature, enqueue=_in_process))
 
     @webhooks.record_once
     def _exempt_from_csrf(state):
@@ -116,60 +135,75 @@ def blueprints(sign_in=None, url_prefix=None):
         if csrf is not None and hasattr(csrf, "exempt"):
             csrf.exempt(webhooks)
 
-    connect = Blueprint("qubesync_connect", __name__, url_prefix=url_prefix)
+    connections = Blueprint("qubesync_connections", __name__, url_prefix=url_prefix)
 
-    @connect.route("/quickbooks/connect", methods=["POST"], endpoint="connect")
+    @connections.route("/quickbooks/connections", methods=["POST"], endpoint="connections")
     @guard
-    def connect_view():
-        return _response(kit.connect(request))
+    def connect():
+        return _response(kit.connect(request, request.form))
+
+    @connections.route("/quickbooks/connections/<id>/onboarding", methods=["POST"], endpoint="connection_onboarding")
+    @guard
+    def onboarding(id):
+        return _response(kit.onboarding(request, id))
 
     questions = Blueprint("qubesync_questions", __name__, url_prefix=url_prefix, template_folder=TEMPLATES)
 
-    @questions.route("/qube/questions/<operation>/<record_id>", methods=["POST"], endpoint="answer")
+    @questions.route("/qube/questions/runs/<id>", methods=["POST"], endpoint="question")
     @guard
-    def answer_view(operation, record_id):
-        reply = kit.answer(request, operation, record_id, request.form, request.referrer, request.host)
-        return _response(reply)
+    def answer(id):
+        return _response(kit.answer(request, id, request.form, request.referrer, request.host))
 
-    @questions.route("/qube/questions/<operation>/<record_id>/search", endpoint="search")
+    @questions.route("/qube/questions/runs/<id>/search", endpoint="question_search")
     @guard
-    def search_view(operation, record_id):
-        return _response(kit.search(request, operation, record_id, request.args))
+    def search(id):
+        return _response(kit.search(request, id, request.args))
 
-    return Blueprints(webhooks, connect, questions)
+    @questions.route("/qube/runs/<id>/retry_start", methods=["POST"], endpoint="retry_start")
+    @guard
+    def retry_start(id):
+        return _response(kit.retry_start(request, id, request.referrer, request.host))
+
+    return Blueprints(webhooks, connections, questions)
 
 
 def init_app(app, sign_in=None, url_prefix=None):
     # type: (Any, Optional[Callable[[Any], Any]], Optional[str]) -> Blueprints
-    """Registers the three blueprints on app, and returns them."""
+    """Registers the three blueprints on app, and qube_question and qube_run_status as Jinja
+    globals, and returns the blueprints."""
     bps = blueprints(sign_in=sign_in, url_prefix=url_prefix)
     for bp in bps:
         app.register_blueprint(bp)
+    app.jinja_env.globals.update(qube_question=question_html, qube_run_status=run_status_html)
     return bps
 
 
-def question_context(slug, record):
-    # type: (str, Any) -> Dict[str, Any]
-    """What the question template reads, for the record's page: the question the run is
-    asking about record, if any, and where it's answered. In the page's view:
-
-        return render_template("invoice.html", invoice=invoice,
-                               **qubesync.flask.question_context("create_invoice", invoice))
-
-    and in invoice.html, {% include "qubesync/question.html" %}."""
-    from flask import url_for
-
-    action = url_for("qubesync_questions.answer", operation=slug, record_id=record.id)
-    return kit.question_context(slug, record, action)
+def question_context(record, operation):
+    # type: (Any, str) -> Dict[str, Any]
+    """What qubesync/question.html reads, for the record's page: the open question of record's
+    latest run of operation (a slug), if it's asking, and where it's answered."""
+    return kit.question_context(record, operation, lambda run: url_for("qubesync_questions.question", id=run.id))
 
 
-def question_html(slug, record, **context):
-    # type: (str, Any, **Any) -> Markup
-    """The question template rendered for record, for a page that doesn't include it: the
-    render_question setting's, when it's set, else qubesync/question.html (yours, at
-    templates/qubesync/question.html, comes first). context adds to it (csp_nonce, say)."""
-    values = dict(question_context(slug, record), **context)
-    render = kit.settings().get("render_question")
-    if render is not None:
-        return Markup(render(values))
-    return Markup(render_template(TEMPLATE, **values))
+def run_status_context(record, operation):
+    # type: (Any, str) -> Dict[str, Any]
+    """What qubesync/run_status.html reads: record's latest run of operation, its summary, a
+    failure's detail, and where an unconfirmed start is sent again."""
+    return kit.run_status_context(
+        record, operation, lambda run: url_for("qubesync_questions.retry_start", id=run.id)
+    )
+
+
+def question_html(record, operation, **context):
+    # type: (Any, str, **Any) -> Markup
+    """qubesync/question.html rendered for record (yours, at templates/qubesync/question.html,
+    comes first). context adds to it (csp_nonce, say)."""
+    return Markup(render_template("qubesync/question.html", **dict(question_context(record, operation), **context)))
+
+
+def run_status_html(record, operation, **context):
+    # type: (Any, str, **Any) -> Markup
+    """qubesync/run_status.html rendered for record."""
+    return Markup(
+        render_template("qubesync/run_status.html", **dict(run_status_context(record, operation), **context))
+    )

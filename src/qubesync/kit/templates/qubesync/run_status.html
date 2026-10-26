@@ -1,0 +1,28 @@
+{#- Where a record's latest run of an operation stands, in a sentence, and what went wrong
+    when it failed, or nothing when the record has no runs of it. A start QuBe Sync hasn't
+    confirmed for a minute gets a "Try the start again" button, which resends it with the same
+    reference. Render it on the record's page with qube_run_status(invoice, "create_invoice")
+    (qubesync.flask's Jinja global; qubesync.fastapi's takes the request first), or include it
+    with run_status_context(...) in the page's context. It reads the run row the kit keeps
+    (Run.summary_text, Run.error_detail). Everything is escaped, and the qube- classes are for
+    your CSS. A csrf_token in the context goes in the retry form. For other markup, put your
+    own at templates/qubesync/run_status.html in your app. -#}
+{% autoescape true %}
+{% if run %}
+<div class="qube-run-status qube-run-{{ state }}">
+  <p class="qube-run-summary">{{ summary }}</p>
+  {% if detail %}
+  <p class="qube-run-error-detail">{{ detail }}</p>
+  {% endif %}
+  {% if retry_action %}
+  <form class="qube-retry-start-form" method="post" action="{{ retry_action }}">
+    {% if csrf_token is defined and csrf_token %}
+    <input type="hidden" name="csrf_token"
+           value="{{ csrf_token() if csrf_token is callable else csrf_token }}">
+    {% endif %}
+    <button type="submit" class="qube-retry-start">Try the start again</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
+{% endautoescape %}

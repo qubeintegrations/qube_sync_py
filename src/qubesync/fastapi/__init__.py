@@ -1,51 +1,53 @@
 """QuBe Sync's integration kit for FastAPI: three routers, since they go behind different
-things (the webhooks behind nothing, onboarding and the questions behind your sign-in), the
-question template, and Operation and ConnectionEvents bases that save through SQLAlchemy.
+things (the webhooks behind nothing, onboarding and the questions behind your sign-in), and
+the question and run status templates. The kit's tables are the SQLAlchemy models in
+qubesync.kit.sqlalchemy, through your session (the db_session setting: a scoped_session).
 
     pip install "qubesync[fastapi]>=0.4.0"
 
     # main.py, where your FastAPI app is made
-    import quickbooks_desktop.config  # its qubesync.kit.configure(...)
+    import quickbooks_desktop.config  # its qubesync.kit.configure(..., db_session=Session)
     import qubesync.fastapi
 
     qube = qubesync.fastapi.routers()
     app.include_router(qube.webhooks)
-    app.include_router(qube.connect, dependencies=[Depends(signed_in)])
+    app.include_router(qube.connections, dependencies=[Depends(signed_in)])
     app.include_router(qube.questions, dependencies=[Depends(signed_in)])
 
 or qubesync.fastapi.router(dependencies=[Depends(signed_in)]), all three in one, with the
-dependencies on connect and the questions only. Your sign-in dependency puts the user where
-current_account and authorize_question read it (request.state.user, say).
+dependencies on all but the webhooks. Your sign-in dependency puts the user where
+current_account reads it (request.state.user, say). FastAPI has no CSRF protection of its own:
+the POSTs from the templates' forms carry a csrf_token you put in their context, for yours.
 
 The routes, relative to where they're included (each named, for request.url_for):
 
-    POST /quickbooks/connect                        qubesync_connect
-    POST /webhooks/qube/{operation}/{record_id}     qubesync_webhook (no sign-in, no CSRF)
-    POST /qube/questions/{operation}/{record_id}    qubesync_answer (reads a form:
-                                                    python-multipart)
-    GET  /qube/questions/{operation}/{record_id}/search  qubesync_search
+    POST /quickbooks/connections                   qubesync_connections
+    POST /quickbooks/connections/{id}/onboarding   qubesync_connection_onboarding
+    POST /webhooks/qube/runs/{id}                  qubesync_run_webhook (no sign-in)
+    POST /webhooks/qube/connections/{id}           qubesync_connection_webhook (no sign-in)
+    POST /qube/questions/runs/{id}                 qubesync_question (reads a form: python-multipart)
+    GET  /qube/questions/runs/{id}/search          qubesync_question_search
+    POST /qube/runs/{id}/retry_start               qubesync_retry_start
 
-The record and the calls to QuBe Sync block, so they run on a worker thread.
+The database and the calls to QuBe Sync block, so they run on a worker thread, which removes
+its scoped session when the route is done.
 """
 try:
     import fastapi as _fastapi  # noqa: F401
 except ImportError as error:  # pragma: no cover
     raise ImportError('qubesync.fastapi needs FastAPI: pip install "qubesync[fastapi]"') from error
 
-import functools
-import logging
-import threading
+import os
 from collections import namedtuple
 from typing import Any, Dict, Optional, Sequence
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, BackgroundTasks, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
 from markupsafe import Markup
 from starlette.concurrency import run_in_threadpool
 
 from .. import kit
-from ..kit.sqlalchemy import ConnectionEvents, Operation
 
 __all__ = [
     "Operation",
@@ -54,27 +56,21 @@ __all__ = [
     "routers",
     "router",
     "question_context",
+    "run_status_context",
     "question_html",
+    "run_status_html",
     "add_templates",
     "TEMPLATES",
 ]
 
-log = logging.getLogger("qubesync.kit")
+Operation = kit.Operation
+ConnectionEvents = kit.ConnectionEvents
 
-TEMPLATE = "qubesync/question.html"
+# The packaged templates (qubesync/question.html, qubesync/run_status.html), shared with
+# qubesync.flask.
+TEMPLATES = os.path.join(os.path.dirname(os.path.abspath(kit.__file__)), "templates")
 
-
-def _templates_dir():
-    # type: () -> str
-    import os
-
-    return os.path.join(os.path.dirname(os.path.abspath(kit.__file__)), "templates")
-
-
-# The packaged templates (qubesync/question.html), shared with qubesync.flask.
-TEMPLATES = _templates_dir()
-
-Routers = namedtuple("Routers", ["webhooks", "connect", "questions"])
+Routers = namedtuple("Routers", ["webhooks", "connections", "questions"])
 
 
 def _response(reply):
@@ -86,34 +82,6 @@ def _response(reply):
     if reply.text is not None:
         return PlainTextResponse(reply.text, status_code=reply.status)
     return Response(status_code=reply.status)
-
-
-# The enqueue setting's default under FastAPI: BackgroundTasks, which runs each in this
-# process once the response is sent, each request's on a thread of its own: one job at a
-# time. A restart loses what it hasn't run, so point enqueue at a durable queue (Celery, arq,
-# RQ) before production.
-_one_at_a_time = threading.Lock()
-_warned = []  # type: list
-
-
-def _background(operation, record_id, body):
-    # type: (str, str, str) -> None
-    with _one_at_a_time:
-        try:
-            kit.run(operation, record_id, body)
-        except Exception:
-            log.exception("QuBe Sync: a webhook job failed")
-
-
-def _warn_once():
-    # type: () -> None
-    if not _warned:
-        _warned.append(True)
-        log.warning(
-            "QuBe Sync: webhooks run as background tasks in this process (the enqueue setting's "
-            "default), so a restart loses what hasn't run: set enqueue to a durable queue before "
-            "production."
-        )
 
 
 async def _raw_body(request):
@@ -136,82 +104,131 @@ async def _raw_body(request):
     return b"".join(chunks)
 
 
+def _host(request):
+    # type: (Request) -> str
+    return request.url.netloc
+
+
+def _unit(fn, *args):
+    # type: (Any, *Any) -> kit.Reply
+    """fn on this worker thread, then the thread's scoped session removed: the pool's threads
+    are reused, and a session left open would keep its transaction (and its snapshot) for the
+    next request on the thread."""
+    try:
+        return fn(*args)
+    finally:
+        _cleanup()
+
+
+def _cleanup():
+    # type: () -> None
+    from ..kit._store import current_store
+
+    try:
+        current_store().cleanup()
+    except kit.NotConfigured:
+        pass
+
+
 def routers():
     # type: () -> Routers
-    """The kit's routers: webhooks, connect and questions. Include connect and questions
-    behind your sign-in (dependencies=[Depends(...)]); current_account and authorize_question
-    (qubesync.kit.configure) decide the rest."""
+    """The kit's routers: webhooks, connections and questions. Include connections and
+    questions behind your sign-in (dependencies=[Depends(...)]); current_account and
+    authorize_question (qubesync.kit.configure) decide the rest. The enqueue setting's
+    default is the kit's worker thread, with retries."""
     webhooks = APIRouter()
 
-    @webhooks.post("/webhooks/qube/{operation}/{record_id}", name="qubesync_webhook")
-    async def webhook(operation: str, record_id: str, request: Request, background_tasks: BackgroundTasks) -> Response:
+    @webhooks.post("/webhooks/qube/runs/{id}", name="qubesync_run_webhook")
+    async def run_webhook(id: str, request: Request) -> Response:
         body = await _raw_body(request)  # the raw bytes the signature is over
         signature = request.headers.get(kit.SIGNATURE_HEADER)
-        enqueue = None
-        if not kit.settings().is_set("enqueue"):
-            _warn_once()
-            enqueue = functools.partial(background_tasks.add_task, _background)
-        reply = await run_in_threadpool(kit.receive, operation, record_id, body, signature, enqueue)
-        return _response(reply)
+        return _response(await run_in_threadpool(_unit, kit.receive, "run", id, body, signature))
 
-    connect = APIRouter()
+    @webhooks.post("/webhooks/qube/connections/{id}", name="qubesync_connection_webhook")
+    async def connection_webhook(id: str, request: Request) -> Response:
+        body = await _raw_body(request)
+        signature = request.headers.get(kit.SIGNATURE_HEADER)
+        return _response(await run_in_threadpool(_unit, kit.receive, "connection", id, body, signature))
 
-    @connect.post("/quickbooks/connect", name="qubesync_connect")
-    def connect_view(request: Request) -> Response:
-        return _response(kit.connect(request))
+    connections = APIRouter()
+
+    @connections.post("/quickbooks/connections", name="qubesync_connections")
+    async def connect(request: Request) -> Response:
+        form = await request.form()
+        return _response(await run_in_threadpool(_unit, kit.connect, request, form))
+
+    @connections.post("/quickbooks/connections/{id}/onboarding", name="qubesync_connection_onboarding")
+    def onboarding(id: str, request: Request) -> Response:
+        return _response(_unit(kit.onboarding, request, id))
 
     questions = APIRouter()
 
-    @questions.post("/qube/questions/{operation}/{record_id}", name="qubesync_answer")
-    async def answer(operation: str, record_id: str, request: Request) -> Response:
+    @questions.post("/qube/questions/runs/{id}", name="qubesync_question")
+    async def answer(id: str, request: Request) -> Response:
         form = await request.form()
         referer = request.headers.get("referer")
-        reply = await run_in_threadpool(kit.answer, request, operation, record_id, form, referer, request.url.netloc)
-        return _response(reply)
+        return _response(await run_in_threadpool(_unit, kit.answer, request, id, form, referer, _host(request)))
 
-    @questions.get("/qube/questions/{operation}/{record_id}/search", name="qubesync_search")
-    def search(operation: str, record_id: str, request: Request) -> Response:
-        return _response(kit.search(request, operation, record_id, request.query_params))
+    @questions.get("/qube/questions/runs/{id}/search", name="qubesync_question_search")
+    def search(id: str, request: Request) -> Response:
+        return _response(_unit(kit.search, request, id, request.query_params))
 
-    return Routers(webhooks, connect, questions)
+    @questions.post("/qube/runs/{id}/retry_start", name="qubesync_retry_start")
+    def retry_start(id: str, request: Request) -> Response:
+        return _response(_unit(kit.retry_start, request, id, request.headers.get("referer"), _host(request)))
+
+    return Routers(webhooks, connections, questions)
 
 
 def router(dependencies=None, prefix=""):
     # type: (Optional[Sequence[Any]], str) -> APIRouter
-    """All three routers in one, with dependencies (your sign-in) on connect and the
-    questions only."""
+    """All three routers in one, with dependencies (your sign-in) on all but the webhooks."""
     parts = routers()
     combined = APIRouter(prefix=prefix)
     combined.include_router(parts.webhooks)
-    combined.include_router(parts.connect, dependencies=list(dependencies or []))
+    combined.include_router(parts.connections, dependencies=list(dependencies or []))
     combined.include_router(parts.questions, dependencies=list(dependencies or []))
     return combined
 
 
-def question_context(request, slug, record):
-    # type: (Request, str, Any) -> Dict[str, Any]
-    """What the question template reads, for the record's page: the question the run is
-    asking about record, if any, and where it's answered. In the page's route:
+def _path(request, name, run):
+    # type: (Request, str, Any) -> str
+    return urlparse(str(request.url_for(name, id=str(run.id)))).path
 
-        context = {"request": request, "invoice": invoice,
-                   **qubesync.fastapi.question_context(request, "create_invoice", invoice)}
-        return templates.TemplateResponse("invoice.html", context)
 
-    and in invoice.html, {% include "qubesync/question.html" %} (add_templates(templates)
-    first, so your Jinja environment finds it)."""
-    action = request.url_for("qubesync_answer", operation=slug, record_id=str(record.id))
-    return kit.question_context(slug, record, urlparse(str(action)).path)
+def question_context(request, record, operation):
+    # type: (Request, Any, str) -> Dict[str, Any]
+    """What qubesync/question.html reads, for the record's page: the open question of record's
+    latest run of operation (a slug), if it's asking, and where it's answered."""
+    return kit.question_context(record, operation, lambda run: _path(request, "qubesync_question", run))
+
+
+def run_status_context(request, record, operation):
+    # type: (Request, Any, str) -> Dict[str, Any]
+    """What qubesync/run_status.html reads: record's latest run of operation, its summary, a
+    failure's detail, and where an unconfirmed start is sent again."""
+    return kit.run_status_context(record, operation, lambda run: _path(request, "qubesync_retry_start", run))
 
 
 def add_templates(templates):
     # type: (Any) -> Any
-    """Lets a Jinja2Templates (or a jinja2 Environment) find qubesync/question.html, after
-    its own directories, so yours at templates/qubesync/question.html comes first."""
+    """Lets a Jinja2Templates (or a jinja2 Environment) find qubesync/question.html and
+    qubesync/run_status.html, after its own directories, so yours come first, and registers
+    qube_question(request, record, operation) and qube_run_status(request, record, operation)
+    as its globals."""
     from jinja2 import ChoiceLoader, FileSystemLoader
 
     env = getattr(templates, "env", templates)
     ours = FileSystemLoader(TEMPLATES)
     env.loader = ChoiceLoader([env.loader, ours]) if env.loader is not None else ours
+    env.globals.update(
+        qube_question=lambda request, record, operation, **context: question_html(
+            request, record, operation, templates=env, **context
+        ),
+        qube_run_status=lambda request, record, operation, **context: run_status_html(
+            request, record, operation, templates=env, **context
+        ),
+    )
     return templates
 
 
@@ -223,21 +240,26 @@ def _own_environment():
     if not _environment:
         from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-        _environment.append(
-            Environment(loader=FileSystemLoader(TEMPLATES), autoescape=select_autoescape(default=True))
-        )
+        _environment.append(Environment(loader=FileSystemLoader(TEMPLATES), autoescape=select_autoescape(default=True)))
     return _environment[0]
 
 
-def question_html(request, slug, record, templates=None, **context):
-    # type: (Request, str, Any, Any, **Any) -> Markup
-    """The question template rendered for record, for a page that doesn't include it: the
-    render_question setting's, when it's set, else qubesync/question.html from templates
-    (your Jinja2Templates, after add_templates) or the packaged one. context adds to it
-    (csrf_token, csp_nonce)."""
-    values = dict(question_context(request, slug, record), request=request, **context)
-    render = kit.settings().get("render_question")
-    if render is not None:
-        return Markup(render(values))
+def _render(templates, name, values):
+    # type: (Any, str, Dict[str, Any]) -> Markup
     env = getattr(templates, "env", templates) if templates is not None else _own_environment()
-    return Markup(env.get_template(TEMPLATE).render(**values))
+    return Markup(env.get_template(name).render(**values))
+
+
+def question_html(request, record, operation, templates=None, **context):
+    # type: (Request, Any, str, Any, **Any) -> Markup
+    """qubesync/question.html rendered for record, from templates (your Jinja2Templates, after
+    add_templates) or the packaged one. context adds to it (csrf_token, csp_nonce)."""
+    values = dict(question_context(request, record, operation), request=request, **context)
+    return _render(templates, "qubesync/question.html", values)
+
+
+def run_status_html(request, record, operation, templates=None, **context):
+    # type: (Request, Any, str, Any, **Any) -> Markup
+    """qubesync/run_status.html rendered for record. context adds to it (csrf_token)."""
+    values = dict(run_status_context(request, record, operation), request=request, **context)
+    return _render(templates, "qubesync/run_status.html", values)

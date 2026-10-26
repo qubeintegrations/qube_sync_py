@@ -1,12 +1,13 @@
 {% comment %}
-The question a QuBe Sync run is asking about a record, with a form per choice, or nothing
-when it isn't asking. Include it on the record's page, with what
-qubesync.django.question_context gives (question and action) in the page's context:
-  {% include "qubesync/question.html" %}
-Each form posts your user's choice to the question routes, with its CSRF token, and a record
-field's box searches through them too, so the API key never reaches the browser. Django
-escapes everything, and the qube- classes are for your CSS. With django-csp, the search
-box's script carries request.csp_nonce.
+The question a QuBe Sync run is asking about a record, with a form per choice, or nothing when
+it isn't asking. Render it on the record's page with its operation's slug:
+  {% load qubesync %}{% qube_question invoice "create_invoice" %}
+or include it with qubesync.django.question_context(invoice, "create_invoice") in the page's
+context. It's the open question of the record's latest run of that operation, as
+Operation.question kept it on the run. Each form posts your user's choice to that run's
+question route, with its CSRF token, and a record field's box searches through it too, so the
+API key never reaches the browser. Django escapes everything, and the qube- classes are for
+your CSS. With django-csp, the search box's script carries request.csp_nonce.
 
 This is QuBe Sync's copy, updated with the package. For other markup, put your own at
 templates/qubesync/question.html in a template directory Django searches first (DIRS, or an

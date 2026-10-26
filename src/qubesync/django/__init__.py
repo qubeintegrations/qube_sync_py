@@ -1,6 +1,5 @@
-"""QuBe Sync's integration kit for Django: an installed app with the routes, the question
-template, and Operation and ConnectionEvents bases that save with save(update_fields=...)
-and lock the record's row while they apply an event.
+"""QuBe Sync's integration kit for Django: an installed app with the kit's tables (models and
+migrations), the routes, and the question and run status templates.
 
     pip install "qubesync[django]>=0.4.0"
 
@@ -10,112 +9,67 @@ and lock the record's row while they apply an event.
     # urls.py
     urlpatterns += [path("", include("qubesync.django.urls"))]
 
-    # quickbooks_desktop/config.py, imported when the app is ready (the QUBESYNC_CONFIG
+    python manage.py migrate qubesync
+
+    # quickbooks_desktop/config.py, imported when the apps are ready (the QUBESYNC_CONFIG
     # Django setting names another module)
     import qubesync.kit
     qubesync.kit.configure(
         operations={"create_invoice": "quickbooks_desktop.create_invoice.CreateInvoice"},
-        connection="quickbooks_desktop.connection.Connection",
+        connection_events="quickbooks_desktop.connection_events.ConnectionEvents",
         current_account=lambda request: request.user.account,
-        authorize_question=lambda request, record, operation: record.account_id == request.user.account_id,
     )
 
-The routes, relative to where urls.py includes them (each named in the qubesync namespace):
+The models are qubesync.django.models' Connection, Run, QuickbooksRecord and Notification
+(tables qube_connections, qube_runs, qube_quickbooks_records and qube_notifications). The
+routes, relative to where urls.py includes them, each named in the qubesync namespace:
 
-    POST quickbooks/connect                        connect   onboarding, behind login_required
-    POST webhooks/qube/<operation>/<record id>     webhook   no sign-in, no CSRF (signed)
-    POST qube/questions/<operation>/<record id>    answer    behind login_required and CSRF
-    GET  qube/questions/<operation>/<record id>/search  search  behind login_required
+    POST quickbooks/connections                   connections            behind login_required and CSRF
+    POST quickbooks/connections/<id>/onboarding   connection_onboarding  behind login_required and CSRF
+    POST webhooks/qube/runs/<id>                  run_webhook            no sign-in, no CSRF (signed)
+    POST webhooks/qube/connections/<id>           connection_webhook     no sign-in, no CSRF (signed)
+    POST qube/questions/runs/<id>                 question               behind login_required and CSRF
+    GET  qube/questions/runs/<id>/search          question_search        behind login_required
+    POST qube/runs/<id>/retry_start               retry_start            behind login_required and CSRF
+
+On a record's page:
+
+    {% load qubesync %}
+    {% qube_run_status invoice "create_invoice" %}
+    {% qube_question invoice "create_invoice" %}
 """
 try:
     import django as _django  # noqa: F401
 except ImportError as error:  # pragma: no cover
     raise ImportError('qubesync.django needs Django: pip install "qubesync[django]"') from error
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 
-from ..kit import _bases
+from ..kit import ConnectionEvents, Operation
 from ..kit import question_context as _question_context
+from ..kit import run_status_context as _run_status_context
 
-__all__ = ["Operation", "ConnectionEvents", "question_context", "lock_record"]
-
-
-def lock_record(record):
-    # type: (Any) -> Any
-    """record read again with a row lock (select_for_update), inside the transaction the
-    caller opened, or record as it is when it isn't a saved Django model."""
-    meta = getattr(record, "_meta", None)
-    if meta is None or getattr(record, "pk", None) is None:
-        return record
-    manager = type(record)._base_manager.using(record._state.db)
-    return manager.select_for_update().get(pk=record.pk)
+__all__ = ["Operation", "ConnectionEvents", "question_context", "run_status_context"]
 
 
-def _atomic(record):
-    from django.db import DEFAULT_DB_ALIAS, transaction
+def question_context(record, operation):
+    # type: (Any, str) -> Dict[str, Any]
+    """What qubesync/question.html reads, for the record's page: the open question of record's
+    latest run of operation (a slug), if it's asking, and where it's answered. The
+    {% qube_question %} tag renders it; for your own markup:
 
-    state = getattr(record, "_state", None)
-    return transaction.atomic(using=getattr(state, "db", None) or DEFAULT_DB_ALIAS)
-
-
-class Operation(_bases.Operation):
-    __doc__ = _bases.Operation.__doc__
-
-    def handle(self, event):
-        # type: (Any) -> None
-        """Operation.handle, inside a transaction, with the record read again under a row
-        lock (lock_record), so two workers never apply one record's events at once and a
-        handler that raises leaves the record as it was, for your queue to retry."""
-        with _atomic(self.record):
-            self.record = self.lock_record(self.record)
-            super().handle(event)
-
-    def lock_record(self, record):
-        # type: (Any) -> Any
-        """The record, locked for the rest of handle's transaction. Override it to lock
-        another way, or return record to not lock."""
-        return lock_record(record)
-
-    def save_record(self, fields):
-        # type: (List[str]) -> None
-        """Writes those fields of the record, as Django's models do. Override it to keep
-        them elsewhere."""
-        self.record.save(update_fields=fields)
-
-
-class ConnectionEvents(_bases.ConnectionEvents):
-    __doc__ = _bases.ConnectionEvents.__doc__
-
-    def handle(self, event):
-        # type: (Any) -> None
-        """ConnectionEvents.handle, inside a transaction, with the account read again under
-        a row lock."""
-        with _atomic(self.account):
-            self.account = self.lock_record(self.account)
-            super().handle(event)
-
-    def lock_record(self, account):
-        # type: (Any) -> Any
-        return lock_record(account)
-
-    def save_record(self, fields):
-        # type: (List[str]) -> None
-        """Writes those fields of the account, as Django's models do. Override it to keep
-        them elsewhere."""
-        self.account.save(update_fields=fields)
-
-
-def question_context(slug, record):
-    # type: (str, Any) -> Dict[str, Any]
-    """What the question template reads, for the record's page: the question the run is
-    asking about record, if any, and where it's answered. In the page's view:
-
-        context = {"invoice": invoice,
-                   **qubesync.django.question_context("create_invoice", invoice)}
-        return render(request, "invoice.html", context)
-
-    and in invoice.html, {% include "qubesync/question.html" %}."""
+        context = {"invoice": invoice, **qubesync.django.question_context(invoice, "create_invoice")}
+    """
     from django.urls import reverse
 
-    action = reverse("qubesync:answer", args=[slug, record.pk])
-    return _question_context(slug, record, action)
+    return _question_context(record, operation, lambda run: reverse("qubesync:question", args=[run.pk]))
+
+
+def run_status_context(record, operation):
+    # type: (Any, str) -> Dict[str, Any]
+    """What qubesync/run_status.html reads: record's latest run of operation, its summary, a
+    failure's detail, and where an unconfirmed start is sent again. The {% qube_run_status %}
+    tag renders it."""
+    from django.urls import reverse
+
+    return _run_status_context(record, operation, lambda run: reverse("qubesync:retry_start", args=[run.pk]))

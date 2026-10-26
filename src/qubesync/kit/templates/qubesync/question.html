@@ -1,17 +1,18 @@
 {#- The question a QuBe Sync run is asking about a record, with a form per choice, or
-    nothing when it isn't asking. Include it on the record's page, with what
-    question_context gives (question and action) in the page's context:
+    nothing when it isn't asking: the open question of the record's latest run of an
+    operation, as Operation.question kept it on the run. Render it on the record's page with
+    qube_question(invoice, "create_invoice") (qubesync.flask registers it as a Jinja global,
+    and qubesync.fastapi's add_templates does, taking the request first), or include it with
+    question_context(...) in the page's context:
       {% include "qubesync/question.html" %}
-    (qubesync.flask.question_context(slug, record), or qubesync.fastapi's with the request),
-    or render it with question_html. Each form posts your user's choice to the question
-    routes, and a record field's box searches through them too, so the API key never reaches
-    the browser. Everything is escaped, and the qube- classes are for your CSS. A csrf_token
-    in the context goes in each form (Flask-WTF's csrf_token(), or your CSRF protection's, a
-    string), and a csp_nonce on the search box's script.
+    Each form posts your user's choice to the run's question route, and a record field's box
+    searches through it too, so the API key never reaches the browser. Everything is escaped,
+    and the qube- classes are for your CSS. A csrf_token in the context goes in each form
+    (Flask-WTF's csrf_token(), or your CSRF protection's, a string), and a csp_nonce on the
+    search box's script.
 
     This is QuBe Sync's copy, updated with the package. For other markup, put your own at
-    templates/qubesync/question.html in your app (it's found first), or set the
-    render_question setting. -#}
+    templates/qubesync/question.html in your app (it's found first). -#}
 {% autoescape true %}
 {% if question %}
 <section class="qube-question">
@@ -26,7 +27,7 @@
   {% for choice in question.choices or [] %}
   {% set n = loop.index0 %}
   <form class="qube-choice" method="post" action="{{ action }}">
-    {% if csrf_token is defined %}
+    {% if csrf_token is defined and csrf_token %}
     <input type="hidden" name="csrf_token"
            value="{{ csrf_token() if csrf_token is callable else csrf_token }}">
     {% endif %}

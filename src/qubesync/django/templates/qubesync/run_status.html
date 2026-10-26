@@ -1,0 +1,25 @@
+{% comment %}
+Where a record's latest run of an operation stands, in a sentence, and what went wrong when it
+failed, or nothing when the record has no runs of it. A start QuBe Sync hasn't confirmed for a
+minute gets a "Try the start again" button, which resends it with the same reference. Render
+it on the record's page:
+  {% load qubesync %}{% qube_run_status invoice "create_invoice" %}
+or include it with qubesync.django.run_status_context(invoice, "create_invoice") in the page's
+context. It reads the run row the kit keeps (Run.summary_text, Run.error_detail). Django
+escapes everything, and the qube- classes are for your CSS. For other markup, put your own at
+templates/qubesync/run_status.html in a template directory Django searches first.
+{% endcomment %}
+{% if run %}
+<div class="qube-run-status qube-run-{{ state }}">
+  <p class="qube-run-summary">{{ summary }}</p>
+  {% if detail %}
+  <p class="qube-run-error-detail">{{ detail }}</p>
+  {% endif %}
+  {% if retry_action %}
+  <form class="qube-retry-start-form" method="post" action="{{ retry_action }}">
+    {% csrf_token %}
+    <button type="submit" class="qube-retry-start">Try the start again</button>
+  </form>
+  {% endif %}
+</div>
+{% endif %}
