@@ -450,7 +450,7 @@ class TestAnswer:
 
         assert (response.status, response.location) == (303, "/invoices/%s" % invoice.id)
         assert client.called("answer") == []
-        assert shown_errors(http, invoice, account) == ["This question has changed; reload."]
+        assert shown_errors(http, invoice, account) == ["This question changed since the page showed it, so that answer was not sent: the page now shows where it stands."]
         assert shown_errors(http, invoice, account) == []  # once
 
     @pytest.mark.parametrize("status,code", [(409, "prompt_changed"), (400, "not_awaiting_input"), (400, "bad_request")])
@@ -461,7 +461,7 @@ class TestAnswer:
 
         assert response.status == 303
         assert world.reload(run).question is None
-        assert shown_errors(http, invoice, account) == ["This question has changed; reload."]
+        assert shown_errors(http, invoice, account) == ["This question changed since the page showed it, so that answer was not sent: the page now shows where it stands."]
 
     def test_keeps_the_question_and_goes_back_saying_why_for_a_422(self, http, world, account, invoice, run, client):
         client.raises["answer"] = api_error(422, {"detail": "count must be a whole number"})
@@ -547,7 +547,7 @@ class TestAnswer:
         run = world.update(run, question=None, links=None)
 
         assert self.answer(http, run, {"choice": "use:1"}, account, invoice).status == 303
-        assert shown_errors(http, invoice, account) == ["This question has changed; reload."]
+        assert shown_errors(http, invoice, account) == ["This question changed since the page showed it, so that answer was not sent: the page now shows where it stands."]
 
     def test_answers_404_for_a_run_that_isnt_there_or_whose_operation_isnt_configured(self, http, account, invoice, run):
         assert http.post("/qube/questions/runs/0", {"choice": "x"}, account=account).status == 404

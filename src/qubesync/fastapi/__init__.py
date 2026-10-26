@@ -56,6 +56,7 @@ from .. import kit
 
 __all__ = [
     "redirect_back",
+    "sync_status",
     "Operation",
     "ConnectionEvents",
     "Routers",
@@ -139,6 +140,15 @@ def redirect_back(request, error=None):
     if error is None:
         return _response(kit.Reply(303, location=kit.back(referer, _host(request))), request)
     return _response(kit.back_with_error(error, 422, referer, _host(request)), request)
+
+
+def sync_status(record, operation, connection=None):
+    # type: (Any, str, Any) -> kit.SyncStatus
+    """record's SyncStatus for operation (on connection, else on its latest run's): the
+    qube_sync_status Jinja global."""
+    if connection is not None:
+        return kit.SyncStatus.of(connection, record, operation)
+    return kit.SyncStatus.latest(record, operation)
 
 
 def take_error(request):
@@ -297,8 +307,8 @@ def add_templates(templates):
     # type: (Any) -> Any
     """Lets a Jinja2Templates (or a jinja2 Environment) find qubesync/question.html and
     qubesync/run_status.html, after its own directories, so yours come first, and registers
-    qube_question(request, record, operation) and qube_run_status(request, record, operation)
-    as its globals."""
+    qube_question(request, record, operation), qube_run_status(request, record, operation) and
+    qube_sync_status(record, operation) as its globals."""
     from jinja2 import ChoiceLoader, FileSystemLoader
 
     env = getattr(templates, "env", templates)
@@ -311,6 +321,7 @@ def add_templates(templates):
         qube_run_status=lambda request, record, operation, connection=None, **context: run_status_html(
             request, record, operation, connection=connection, templates=env, **context
         ),
+        qube_sync_status=sync_status,
     )
     return templates
 

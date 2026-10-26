@@ -177,7 +177,7 @@ def test_without_a_session_the_message_is_a_short_cookie_the_page_clears(app, wo
     cookie = response.headers["set-cookie"]
     assert cookie.startswith("%s=" % kit.ERROR_KEY) and "Max-Age=60" in cookie and "Path=/" in cookie
     shown = http.get("/invoices/%s" % invoice.id, account=account).text
-    assert shown.count('<p class="qube-error">This question has changed; reload.</p>') == 1
+    assert shown.count('<p class="qube-error">This question changed since the page showed it, so that answer was not sent: the page now shows where it stands.</p>') == 1
     assert 'document.cookie = "%s=; Max-Age=0; Path=/; SameSite=Lax"' % kit.ERROR_KEY in shown
 
 
@@ -199,3 +199,16 @@ def test_redirect_back_goes_back_with_the_message_for_the_page():
     response = http.post("/fine", headers={"Referer": "https://elsewhere.example/x"}, follow_redirects=False)
     assert (response.status_code, response.headers["location"]) == (303, "/")
     assert "set-cookie" not in response.headers
+
+
+def test_qube_sync_status_is_a_global_of_the_templates(app, world, account):
+    invoice = world.invoice(account)
+    connection = world.connection(account)
+    connection.link(invoice, kind="invoice", qb_id="TXN-1")
+
+    templates = qube_fastapi.add_templates(Jinja2Templates(directory=os.path.join(HERE, "kit_templates", "empty")))
+    shown = templates.env.from_string("{{ qube_sync_status(invoice, 'create_invoice', connection).status }}").render(
+        invoice=invoice, connection=connection
+    )
+
+    assert shown == "in_quickbooks"

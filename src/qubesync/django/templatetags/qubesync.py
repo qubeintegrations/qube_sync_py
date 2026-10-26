@@ -4,6 +4,7 @@ Rails engine's partials are rendered:
     {% qube_run_status invoice "create_invoice" %}
     {% qube_run_status invoice "create_invoice" connection=connection %}
     {% qube_question invoice "create_invoice" %}
+    {% qube_sync_status invoice "create_invoice" as sync %}{% if sync.status != "in_quickbooks" %}...
 
 Each takes the record and its operation's slug, and passes the page's CSRF token and request
 on to the template (qubesync/question.html, qubesync/run_status.html). Whichever comes first
@@ -11,6 +12,7 @@ shows the message a question or run route left in the session.
 """
 from django import template
 
+from ...kit import SyncStatus
 from .. import question_context, run_status_context
 
 register = template.Library()
@@ -34,3 +36,12 @@ def qube_run_status(context, record, operation, connection=None):
     """Where record stands with QuickBooks for operation (on connection, else on its latest
     run's), or nothing before it's sent."""
     return _with_page(context, run_status_context(record, operation, connection, request=context.get("request")))
+
+
+@register.simple_tag
+def qube_sync_status(record, operation, connection=None):
+    """record's SyncStatus for operation (on connection, else on its latest run's), for a page
+    that shows a start button only while it makes sense."""
+    if connection is not None:
+        return SyncStatus.of(connection, record, operation)
+    return SyncStatus.latest(record, operation)

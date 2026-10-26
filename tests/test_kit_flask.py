@@ -172,3 +172,16 @@ def test_redirect_back_goes_back_with_the_message_for_the_page(app):
         response = qube_flask.redirect_back()
         assert (response.status_code, response.location) == (303, "/")
         assert qube_flask.take_error() is None
+
+
+def test_qube_sync_status_is_a_jinja_global(app, world, account):
+    invoice = world.invoice(account)
+    connection = world.connection(account)
+    connection.link(invoice, kind="invoice", qb_id="TXN-1")
+
+    with app[0].app.test_request_context("/"):
+        shown = render_template_string(
+            "{{ qube_sync_status(invoice, 'create_invoice', connection).status }}", invoice=invoice, connection=connection
+        )
+
+    assert shown == "in_quickbooks"

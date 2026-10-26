@@ -58,7 +58,10 @@ __all__ = [
     "back",
 ]
 
-CHANGED = "This question has changed; reload."
+CHANGED = (
+    "This question changed since the page showed it, so that answer was not sent: "
+    "the page now shows where it stands."
+)
 NOT_STARTING = "This run isn't waiting for its start to be confirmed."
 NOT_QUIET = "QuBe Sync has been heard from about this run lately: nothing to ask for."
 REDELIVERY_REFUSED = {

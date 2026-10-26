@@ -251,3 +251,16 @@ def test_redirect_back_goes_back_with_the_message_for_the_page():
     request.session = {}
     response = qube_django.redirect_back(request)
     assert (response.status_code, response["Location"], request.session) == (303, "/", {})
+
+
+def test_qube_sync_status_gives_the_page_where_the_record_stands(app, world, account):
+    invoice = world.invoice(account)
+    connection = world.connection(account)
+    page = engines["django"].from_string(
+        '{% load qubesync %}{% qube_sync_status invoice "create_invoice" as sync %}{{ sync.status }}'
+        '{% qube_sync_status invoice "create_invoice" connection=connection as there %}/{{ there.status }}'
+    )
+    assert page.render({"invoice": invoice, "connection": connection}) == "not_sent/not_sent"
+
+    connection.link(invoice, kind="invoice", qb_id="TXN-1")
+    assert page.render({"invoice": invoice, "connection": connection}) == "not_sent/in_quickbooks"

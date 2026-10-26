@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `qube_sync_status`: a Django tag (`{% qube_sync_status invoice "create_invoice" as sync %}`) and a
+  Flask and FastAPI Jinja global, so a page shows its start button only while it makes sense.
 - `redirect_back` in `qubesync.django`, `qubesync.flask` and `qubesync.fastapi`, and
   `qubesync.kit.NETWORK_ERRORS`: for your own views, such as a start button's, to go back with
   a message the page shows once.
@@ -54,6 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `qubesync.operations._fields`, each operation's params fields, for the renderer only.
 
 ### Changed
+- An answer to a question that changed says so without asking for a reload: "This question
+  changed since the page showed it, so that answer was not sent: the page now shows where it
+  stands."
 - Kit: `Operation.start` returns the record's run that hasn't ended on that connection
   (`run.reused` is `True`), sending its start again with the same reference and stored input when
   it's unconfirmed, rather than starting another; the check and the new row, with its input, are

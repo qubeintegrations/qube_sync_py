@@ -55,6 +55,7 @@ from ..kit._job import enqueue_in_process
 
 __all__ = [
     "redirect_back",
+    "sync_status",
     "Operation",
     "ConnectionEvents",
     "Blueprints",
@@ -109,6 +110,15 @@ def redirect_back(error=None):
     if error is None:
         return _response(kit.Reply(303, location=kit.back(referer, request.host)))
     return _response(kit.back_with_error(error, 422, referer, request.host))
+
+
+def sync_status(record, operation, connection=None):
+    # type: (Any, str, Any) -> kit.SyncStatus
+    """record's SyncStatus for operation (on connection, else on its latest run's): the
+    qube_sync_status Jinja global."""
+    if connection is not None:
+        return kit.SyncStatus.of(connection, record, operation)
+    return kit.SyncStatus.latest(record, operation)
 
 
 def take_error():
@@ -225,7 +235,9 @@ def init_app(app, sign_in=None, url_prefix=None):
     bps = blueprints(sign_in=sign_in, url_prefix=url_prefix)
     for bp in bps:
         app.register_blueprint(bp)
-    app.jinja_env.globals.update(qube_question=question_html, qube_run_status=run_status_html)
+    app.jinja_env.globals.update(
+        qube_question=question_html, qube_run_status=run_status_html, qube_sync_status=sync_status
+    )
     return bps
 
 
