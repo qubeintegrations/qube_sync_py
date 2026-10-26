@@ -10,22 +10,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.0] - 2026-10-25
 
 ### Added
-- `qubesync.kit`, the integration kit without a framework: `configure(**settings)` / `settings()`
-  (`operations`, `connection`, `current_account`, `authorize_question`, `enqueue`, `dedupe`,
-  `api_key`, `base_url`, `webhook_secret`, `webhook_url`, `client`, `render_question`; an unset
-  one raises `NotConfigured` naming `quickbooks_desktop/config.py`; `repr` hides the secrets),
-  the `Operation` and `ConnectionEvents` bases, the job `run(operation, record_id, body)`, the
-  routes' work (`receive`, `connect`, `answer`, `search`, returning a `Reply`), the answer helpers
-  (`choice`, `answer_data`, `refusal`, `back`), `question_context`, the mapping helpers
-  (`without_nils`, `get`, `dig`, `rows`, `as_string`, `as_number`, `as_integer`, `as_date`) and
-  SQLAlchemy bases (`qubesync.kit.sqlalchemy`). It imports no framework.
-- `qubesync.django` (extra `django`): an installed app with `qubesync.django.urls`, the views,
-  `templates/qubesync/question.html`, and bases that save with `save(update_fields=...)` under
-  `select_for_update` in `transaction.atomic`.
-- `qubesync.flask` (extra `flask`): `blueprints()` / `init_app()`, the Jinja question template,
-  `question_context` and `question_html`, SQLAlchemy bases.
+- `qubesync.kit`, the integration kit: the Python port of the qube_rails engine. It imports no
+  framework and no ORM.
+  - Tables of its own: `qube_connections` (an account can have several, one per company file),
+    `qube_runs`, `qube_quickbooks_records` and `qube_notifications`, with qube_rails' columns,
+    unique keys and indexes. Django gets them as `qubesync.django.models` with a migration;
+    Flask and FastAPI as SQLAlchemy models in `qubesync.kit.sqlalchemy` (its own `metadata`, for
+    an app's Alembic). JSON is kept as text, the same on PostgreSQL, MySQL and SQLite. Your own
+    tables need no QuBe columns.
+  - `Connection`: `owned_by(owner)`, `link(record, kind=, qb_id=, edit_sequence=None,
+    name=None)` (an id linked to another record moves, and that's logged; a row lock and a
+    savepoint retry on a unique race), `qb_id_for(record, kind=)`, `find_linked(qb_id,
+    kind=None)`, `quickbooks_record(qb_id, kind=None)`, `connected()`, `not_checking_in()`,
+    `webhook_url`, `owner`, and `adopt_qube_connection()` for a create whose id was never
+    saved. QuickBooks ids are unique per list family (`family_for`).
+  - `Run`: `latest_for(record, operation)`, `retry_start()` (the same reference as the
+    Idempotency-Key), `summary_text`, `error_message`, `error_detail`, `open_question`,
+    `ended()`, `failed()`, `cancelled()`, `unconfirmed()`, `record`, `webhook_url`.
+  - `Operation`: `start(record, connection)` (the run row first; a 4xx or a raised input marks
+    it failed, no answer leaves it starting), `retry_start(run)`, `find_record`, `input`, the
+    handlers (`question`, `ended`, `failed`, `notification`), `quickbooks_ref`,
+    `link_references(event, fn)`, `answered(token)`, `without_nils`, `log_event`. Events are
+    checked against the run's reference and connection, applied by revision under the run
+    row's lock, and every ending is kept on the run.
+  - `ConnectionEvents`: `connected`, `setup_cancelled`, `stalled` and `resumed`, with
+    `connection` and `owner`; an event before the row has its qube_id adopts it or raises
+    `NotReady` for a retry.
+  - `configure(**settings)`: `operations`, `connection_events`, `current_account`,
+    `authorize_question` (default: the signed-in account owns the run's connection),
+    `enqueue`, `job_attempts` (10), `dedupe` (default `DatabaseDedupe`, the
+    `qube_notifications` table in the handler's transaction, or `CacheDedupe`), `db_session`
+    (SQLAlchemy), `api_key`, `base_url`, `webhook_secret`, `webhook_url`, `client`. An unset one
+    raises `NotConfigured` naming `quickbooks_desktop/config.py`; `repr` hides the secrets.
+  - The job, `run(kind, id, body)`, and the default queue (`perform`): a worker thread that
+    runs a delivery whose work raised again after a growing wait, `job_attempts` times.
+  - The routes' work, returning a `Reply`: `connect`, `onboarding`, `receive`, `answer`,
+    `search`, `retry_start`; and `question_context` and `run_status_context`.
+- The routes, in each adapter: `POST quickbooks/connections` (reuses the account's
+  never-connected connection unless `new=1`), `POST quickbooks/connections/<id>/onboarding`
+  (404 unless the signed-in account owns it), `POST webhooks/qube/runs/<id>` and
+  `POST webhooks/qube/connections/<id>` (401, 404, 413, 200, or 503 when the enqueue fails),
+  `POST qube/questions/runs/<id>` and `GET .../search` (403 while neither authorize_question nor
+  current_account is set, 404 when refused, 409 when the question changed), and
+  `POST qube/runs/<id>/retry_start`.
+- `qubesync.django` (extra `django`): an installed app with the models and migration,
+  `qubesync.django.urls`, the templates and `{% load qubesync %}` (`{% qube_question %}`,
+  `{% qube_run_status %}`).
+- `qubesync.flask` (extra `flask`): `blueprints()` / `init_app()`, the Jinja templates and
+  globals (`qube_question`, `qube_run_status`).
 - `qubesync.fastapi` (extra `fastapi`): `routers()` / `router()`, `add_templates`,
-  `question_context` and `question_html`, SQLAlchemy bases.
+  `question_html` and `run_status_html`.
 
 ## [0.3.0] - 2026-10-25
 
