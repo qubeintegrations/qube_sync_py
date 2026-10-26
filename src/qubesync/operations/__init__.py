@@ -10,6 +10,10 @@ imported only when first used.
 import importlib
 from typing import Any, Dict, NamedTuple, Tuple
 
+# The digest of the operations.json these were generated from. A workflow types document
+# names the one its ``$operation`` ids refer to (``operations_digest``).
+DIGEST = "sha256:27dfcdae7dfd1d566328e676abfb92126f24a90719c8eb8c8defd74b031aa4fa"
+
 
 class Operation(NamedTuple):
     method: str

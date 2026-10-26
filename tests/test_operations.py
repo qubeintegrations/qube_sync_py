@@ -68,6 +68,32 @@ def test_the_index_matches_the_manifest():
     assert set(ENTITIES) == {op["entity"] for op in ops.values()}
 
 
+def test_the_digest_is_the_manifests():
+    import hashlib
+
+    from qubesync.operations import DIGEST
+
+    with open(MANIFEST, "rb") as f:
+        assert DIGEST == "sha256:" + hashlib.sha256(f.read()).hexdigest()
+
+
+def test_the_field_index_matches_the_params_types():
+    from qubesync.operations import _fields
+
+    assert set(_fields.PARAMS) == set(OPERATIONS) == set(_fields.FIELDS)
+    for op_id, name in _fields.PARAMS.items():
+        module = importlib.import_module("qubesync.operations." + _fields.MODULES[name])
+        params = getattr(module, name)
+        annotations = {}
+        for klass in reversed(params.__mro__):
+            annotations.update(getattr(klass, "__annotations__", {}))
+        assert set(_fields.FIELDS[op_id]) == set(annotations), op_id
+    for name, module in _fields.MODULES.items():
+        assert hasattr(importlib.import_module("qubesync.operations." + module), name), name
+    assert _fields.FIELDS["receive_payment.create"]["customer_ref"] == ("Ref", True)
+    assert _fields.FIELDS["receive_payment.create"]["applied_to_txn_add"] == ("List[AppliedToTxnAdd]", False)
+
+
 # -- Every operation, through its entity ---------------------------------------------------
 
 
