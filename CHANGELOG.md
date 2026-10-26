@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `Client.create_connection(webhook_url=, name=None, type=None)`: `type="simulated"` makes a
+  connection to a simulated QuickBooks company file, connected as it's made.
+- `Client.redeliver_run(connection_id, run_id)`: `POST .../workflow-runs/{run_id}/redeliver`, which
+  has QuBe Sync send the run's latest event again; returns `{run_id, event, revision,
+  webhook_url}`, raises `APIError` 409 (`nothing_to_redeliver`) or 429. Not retried.
 - `qubesync.kit.MissingReference`, which the kit's mapped operations raise from `input` when a
   reference QuickBooks requires has no link and no name, so the start fails before anything is sent.
 - Typed workflow starts: `qubesync workflows [--drafts] [--check] [--output qube_workflows.py]`

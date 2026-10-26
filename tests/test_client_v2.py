@@ -190,6 +190,11 @@ def test_create_connection_omits_nil_name(client, fake):
     assert body_of(fake.last) == {"webhook_url": "https://app.test/hook"}
 
 
+def test_create_connection_sends_type_for_a_simulated_connection(client, fake):
+    client.create_connection(webhook_url="https://app.test/hook", type="simulated")
+    assert body_of(fake.last) == {"webhook_url": "https://app.test/hook", "type": "simulated"}
+
+
 # -- Connections ---------------------------------------------------------------------------
 
 
@@ -313,6 +318,22 @@ def test_cancel_run(client, fake):
     assert body_of(fake.last) == {}
     client.cancel_run(url, reason="customer asked")
     assert body_of(fake.last) == {"reason": "customer asked"}
+
+
+def test_redeliver_run_posts_to_the_runs_redeliver_route(client, fake):
+    sent = {"run_id": "r1", "event": "workflow_run.completed", "revision": 7, "webhook_url": "https://app.test/r/1"}
+    fake.answer({"status": 202, "json": {"data": sent}})
+    assert client.redeliver_run("c1", "r 1") == sent
+    assert (fake.last["method"], fake.last["path"]) == ("POST", "/api/v2/connections/c1/workflow-runs/r%201/redeliver")
+
+
+@pytest.mark.parametrize("status", [409, 429])
+def test_redeliver_run_refusals_raise_and_are_not_retried(client, fake, sleeps, status):
+    fake.answer({"status": status, "json": {"errors": {"code": "nothing_to_redeliver"}}})
+    with pytest.raises(APIError) as info:
+        client.redeliver_run("c1", "r1")
+    assert info.value.status == status
+    assert len(fake.requests) == 1
 
 
 def test_run_events_returns_the_whole_body(client, fake):

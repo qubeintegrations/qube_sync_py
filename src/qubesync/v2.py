@@ -322,10 +322,11 @@ class Client(OperationsMixin):
 
     # -- Connections -------------------------------------------------------------------------
 
-    def create_connection(self, *, webhook_url, name=None):
-        # type: (str, Optional[str]) -> Any
-        """POST /connections. Not retried (the endpoint takes no Idempotency-Key)."""
-        return self._data("POST", "/connections", _compact(webhook_url=webhook_url, name=name))
+    def create_connection(self, *, webhook_url, name=None, type=None):
+        # type: (str, Optional[str], Optional[str]) -> Any
+        """POST /connections. Not retried (the endpoint takes no Idempotency-Key).
+        ``type="simulated"`` makes a connection to a simulated company file, connected as it's made."""
+        return self._data("POST", "/connections", _compact(webhook_url=webhook_url, name=name, type=type))
 
     def get_connection(self, id):
         # type: (str) -> Any
@@ -395,6 +396,15 @@ class Client(OperationsMixin):
         # type: (str, Optional[str]) -> Any
         """POST a run's ``links.cancel``. Not retried."""
         return self._data("POST", cancel_url, _compact(reason=reason))
+
+    def redeliver_run(self, connection_id, run_id):
+        # type: (str, str) -> Any
+        """POST .../workflow-runs/{run_id}/redeliver: QuBe Sync sends the run's latest event again.
+        Returns ``{"run_id", "event", "revision", "webhook_url"}``; 409 when there's nothing to
+        send yet, 429 when asked again too soon. Not retried."""
+        return self._data(
+            "POST", "/connections/%s/workflow-runs/%s/redeliver" % (_seg(connection_id), _seg(run_id))
+        )
 
     def run_events(self, connection_id, run_id, *, after=None, limit=None):
         # type: (str, str, Optional[Any], Optional[int]) -> Any

@@ -58,6 +58,9 @@ qube.regenerate_onboarding(connection["id"])
 qube.update_connection(connection["id"], webhook_url="https://your-app.com/webhooks/qube2")
 ```
 
+`create_connection(webhook_url=..., type="simulated")` makes a connection to a simulated
+QuickBooks company file instead, connected as it's made, for testing without a Windows computer.
+
 Also `get_connection(id)`, `list_connections()`, `delete_connection(id)`, and for a setup
 without hosted onboarding `set_password(id, password=None)` and `get_qwc(id)` (the QWC file's XML).
 
@@ -85,9 +88,12 @@ qube.get_run(event.links["run"])                  # or qube.get_run(connection_i
 qube.cancel_run(event.links["cancel"], reason="customer cancelled the order")
 ```
 
-Also `list_runs(connection_id, reference=None, state=None, outcome=None)` and
-`run_events(connection_id, run_id, after=None, limit=None)`, which returns the whole body
-(`{"data": [...], "next_after": ...}`) so you can page with `after=`.
+Also `list_runs(connection_id, reference=None, state=None, outcome=None)`,
+`redeliver_run(connection_id, run_id)`, which has QuBe Sync send the run's latest event again
+(after an outage longer than the webhook retries) and returns `{"run_id", "event", "revision",
+"webhook_url"}` (a 409 `APIError` when it has nothing to send yet, 429 when asked again too
+soon), and `run_events(connection_id, run_id, after=None, limit=None)`, which returns the whole
+body (`{"data": [...], "next_after": ...}`) so you can page with `after=`.
 
 ### Typed workflow starts
 
