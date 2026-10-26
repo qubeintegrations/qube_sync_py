@@ -3,7 +3,14 @@ from typing import Optional
 
 from ..errors import QubeSyncError
 
-__all__ = ["CONFIG_FILE", "NotConfigured", "NotReady", "NotConnected", "UnknownOperation"]
+__all__ = [
+    "CONFIG_FILE",
+    "MissingReference",
+    "NotConfigured",
+    "NotReady",
+    "NotConnected",
+    "UnknownOperation",
+]
 
 # Where an app writes its settings, named in every NotConfigured.
 CONFIG_FILE = "quickbooks_desktop/config.py"
@@ -28,6 +35,13 @@ class NotReady(QubeSyncError):
 class NotConnected(QubeSyncError, ValueError):
     """Operation.start was given a connection QuBe Sync hasn't made yet (no qube_id): the
     customer hasn't finished onboarding, or QuBe Sync didn't answer it."""
+
+
+class MissingReference(QubeSyncError, ValueError):
+    """An operation's input has no value for a reference QuickBooks requires (an invoice's
+    customer_ref): the record has no QuickBooks link on the run's connection and no name to look
+    it up by. The kit's mapped operations raise it from input, so the start fails, before anything
+    is sent, saying which reference and which record."""
 
 
 class UnknownOperation(QubeSyncError, LookupError):

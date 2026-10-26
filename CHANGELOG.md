@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `qubesync.kit.MissingReference`, which the kit's mapped operations raise from `input` when a
+  reference QuickBooks requires has no link and no name, so the start fails before anything is sent.
 - Typed workflow starts: `qubesync workflows [--drafts] [--check] [--output qube_workflows.py]`
   (a console script, and `python -m qubesync workflows`) fetches your app's workflow input types
   with `QUBE_API_KEY` (from `QUBE_BASE_URL`, with or without `/api/v2`) and writes one module to

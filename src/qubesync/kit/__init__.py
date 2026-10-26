@@ -23,7 +23,14 @@ from ..v2 import APIError, Client
 from . import mapping
 from ._connection_events import ConnectionEvents
 from ._defaults import CacheDedupe, DatabaseDedupe, InProcessQueue, client, log_retry
-from ._errors import CONFIG_FILE, NotConfigured, NotConnected, NotReady, UnknownOperation
+from ._errors import (
+    CONFIG_FILE,
+    MissingReference,
+    NotConfigured,
+    NotConnected,
+    NotReady,
+    UnknownOperation,
+)
 from ._job import perform, retry_delay, run
 from ._models import family_for
 from ._operation import Operation, without_nils
@@ -62,6 +69,7 @@ __all__ = [
     # errors
     "NotConfigured",
     "NotReady",
+    "MissingReference",
     "NotConnected",
     "UnknownOperation",
     # the bases
