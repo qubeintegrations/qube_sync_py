@@ -27,7 +27,7 @@ from .errors import QubeSyncError
 from .operations import OPERATIONS
 from .operations._accessors import OperationsMixin
 
-__all__ = ["Client", "APIError"]
+__all__ = ["Client", "APIError", "NOT_MODIFIED"]
 
 DEFAULT_BASE_URL = "https://qubesync.com"
 API_PREFIX = "/api/v2"
@@ -40,6 +40,17 @@ _RETRY_SAFE_METHODS = ("GET", "PUT", "DELETE")
 # Answers after which the request may have been carried out though its answer was lost.
 _MAYBE_APPLIED_STATUSES = (502, 504)
 _RAW_BODY_LIMIT = 500
+
+
+class _NotModified(object):
+    __slots__ = ()
+
+    def __repr__(self):
+        return "NOT_MODIFIED"
+
+
+# What Client.workflow_types returns when the document is still the one its etag names.
+NOT_MODIFIED = _NotModified()
 
 
 class APIError(QubeSyncError):
@@ -226,6 +237,12 @@ def _unwrap(parsed):
     return parsed
 
 
+def _entity_tag(value):
+    # type: (Any) -> str
+    text = str(value)
+    return text if text.startswith('"') or text.startswith("W/") else '"%s"' % text
+
+
 def _compact(**values):
     # type: (**Any) -> Dict[str, Any]
     return {k: v for k, v in values.items() if v is not None}
@@ -387,6 +404,30 @@ class Client(OperationsMixin):
             "/connections/%s/workflow-runs/%s/events" % (_seg(connection_id), _seg(run_id)),
             query=_compact(after=after, limit=limit),
         )
+
+    # -- Workflow types ----------------------------------------------------------------------
+
+    def workflow_types(self, *, include_drafts=False, etag=None):
+        # type: (bool, Optional[str]) -> Any
+        """GET /workflows/types: the input types of the app's workflows, which ``qubesync
+        workflows`` writes as a typed module (``qubesync.workflow_types``). Returns the document
+        (the response's ``data``): ``digest``, ``operations_digest``, ``include_drafts``,
+        ``workflows`` (each published workflow at its published version) and, with
+        ``include_drafts=True`` (``?include=drafts``), ``drafts`` (each workflow whose working
+        copy differs from it). With ``etag`` (a document's ``digest``, or the ETag it came with)
+        it returns ``NOT_MODIFIED`` when the document is still that one."""
+        headers = {"If-None-Match": _entity_tag(etag)} if etag else None
+        try:
+            return self._data(
+                "GET",
+                "/workflows/types",
+                query=_compact(include="drafts" if include_drafts else None),
+                headers=headers,
+            )
+        except APIError as error:
+            if error.status != 304:
+                raise
+            return NOT_MODIFIED
 
     # -- Questions ---------------------------------------------------------------------------
 

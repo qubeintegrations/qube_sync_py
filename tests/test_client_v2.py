@@ -259,6 +259,37 @@ def test_start_run_is_retried_with_its_reference(client, fake, sleeps):
     assert len(sleeps) == 1
 
 
+def test_workflow_types(client, fake):
+    document = {"digest": "sha256:" + "a" * 64, "operations_digest": "sha256:" + "b" * 64, "workflows": {}}
+    fake.answer({"status": 200, "json": {"data": document}, "headers": {"ETag": '"%s"' % document["digest"]}})
+    assert client.workflow_types() == document
+    req = fake.last
+    assert (req["method"], req["path"], req["raw_query"]) == ("GET", "/api/v2/workflows/types", "")
+    assert "if-none-match" not in req["headers"]
+
+
+def test_workflow_types_with_drafts_and_an_etag(client, fake):
+    from qubesync.v2 import NOT_MODIFIED
+
+    fake.answer({"status": 304, "text": ""})
+    assert client.workflow_types(include_drafts=True, etag="sha256:" + "a" * 64) is NOT_MODIFIED
+    req = fake.last
+    assert req["raw_query"] == "include=drafts"
+    assert req["headers"]["if-none-match"] == '"sha256:%s"' % ("a" * 64)
+
+    fake.answer({"status": 304, "text": ""})
+    client.workflow_types(etag='W/"x"')
+    assert fake.last["headers"]["if-none-match"] == 'W/"x"'
+    assert repr(NOT_MODIFIED) == "NOT_MODIFIED"
+
+
+def test_workflow_types_raises_a_refusal(client, fake):
+    fake.answer({"status": 401, "json": {"errors": "invalid API key"}})
+    with pytest.raises(APIError) as info:
+        client.workflow_types()
+    assert info.value.status == 401
+
+
 def test_get_run_by_link_or_ids(client, fake):
     client.get_run(fake.base_url + "/api/v2/connections/c1/workflow-runs/r1?x=1")
     assert fake.last["path"] == "/api/v2/connections/c1/workflow-runs/r1"
