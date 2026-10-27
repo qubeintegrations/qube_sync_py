@@ -12,7 +12,7 @@ from typing import Any, Dict, NamedTuple, Tuple
 
 # The digest of the operations.json these were generated from. A workflow types document
 # names the one its ``$operation`` ids refer to (``operations_digest``).
-DIGEST = "sha256:27dfcdae7dfd1d566328e676abfb92126f24a90719c8eb8c8defd74b031aa4fa"
+DIGEST = "sha256:fbbc56fa74196e96903b2eef75216be240e409296641d33f4158da2b48020540"
 
 
 class Operation(NamedTuple):

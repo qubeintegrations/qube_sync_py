@@ -14,9 +14,9 @@ class _MergeFromRequired(TypedDict):
     #: value is stale, the update is rejected to prevent overwriting newer changes.
     edit_sequence: str
     #: `list_id` and `full_name` both identify a list object. QuickBooks assigns `list_id` when
-    #: the object is created. `list_id` values are unique within a list type, not globally
-    #: across all lists. If both `full_name` and `list_id` are supplied in a request, QuickBooks
-    #: uses `list_id` and ignores `full_name`.
+    #: the object is created. `list_id` values are unique within a list family, not across the
+    #: company file: customers, vendors, employees and other names share one sequence, every
+    #: item type shares another, and each other list has its own.
     list_id: str
 
 

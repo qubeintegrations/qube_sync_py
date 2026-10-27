@@ -103,9 +103,9 @@ class InventorySiteQueryParams(TypedDict, total=False):
     full_name: List[str]
     include_ret_element: List[Literal["Contact", "EditSequence", "Email", "Fax", "IsActive", "IsDefaultSite", "ListID", "Name", "ParentSiteRef", "Phone", "SiteAddress", "SiteAddressBlock", "SiteDesc", "TimeCreated", "TimeModified"]]
     #: `list_id` and `full_name` both identify a list object. QuickBooks assigns `list_id` when
-    #: the object is created. `list_id` values are unique within a list type, not globally
-    #: across all lists. If both `full_name` and `list_id` are supplied in a request, QuickBooks
-    #: uses `list_id` and ignores `full_name`.
+    #: the object is created. `list_id` values are unique within a list family, not across the
+    #: company file: customers, vendors, employees and other names share one sequence, every
+    #: item type shares another, and each other list has its own.
     #:
     #: Choose at most one of: `list_id`, or `full_name`, or the set (`active_status`,
     #: `from_modified_date`, `name_filter`, `name_range_filter`, `to_modified_date`). Members of
@@ -148,9 +148,9 @@ class _InventorySiteUpdateParamsRequired(TypedDict):
     #: value is stale, the update is rejected to prevent overwriting newer changes.
     edit_sequence: str
     #: `list_id` and `full_name` both identify a list object. QuickBooks assigns `list_id` when
-    #: the object is created. `list_id` values are unique within a list type, not globally
-    #: across all lists. If both `full_name` and `list_id` are supplied in a request, QuickBooks
-    #: uses `list_id` and ignores `full_name`.
+    #: the object is created. `list_id` values are unique within a list family, not across the
+    #: company file: customers, vendors, employees and other names share one sequence, every
+    #: item type shares another, and each other list has its own.
     list_id: str
 
 
