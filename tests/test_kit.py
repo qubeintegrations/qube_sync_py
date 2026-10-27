@@ -218,8 +218,8 @@ def test_receive_answers_413_before_reading_and_401_for_a_bad_signature(caplog):
 # -- The job and the bases -------------------------------------------------------------------
 
 
-def test_run_takes_a_run_or_a_connection_only():
-    with pytest.raises(ValueError, match="a run or a connection"):
+def test_run_takes_a_run_a_connection_or_a_request_only():
+    with pytest.raises(ValueError, match="a run, a connection or a request"):
         kit.run("operation", "1", vector_body("workflow_run.completed"))
 
 

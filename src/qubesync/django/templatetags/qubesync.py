@@ -5,6 +5,7 @@ Rails engine's partials are rendered:
     {% qube_run_status invoice "create_invoice" connection=connection %}
     {% qube_question invoice "create_invoice" %}
     {% qube_sync_status invoice "create_invoice" as sync %}{% if sync.status != "in_quickbooks" %}...
+    {% qube_error %}  (a route's message, on a page without the other two: a disconnect's)
 
 Each takes the record and its operation's slug, and passes the page's CSRF token and request
 on to the template (qubesync/question.html, qubesync/run_status.html). Whichever comes first
@@ -13,7 +14,7 @@ shows the message a question or run route left in the session.
 from django import template
 
 from ...kit import SyncStatus
-from .. import question_context, run_status_context
+from .. import question_context, run_status_context, take_error
 
 register = template.Library()
 
@@ -45,3 +46,9 @@ def qube_sync_status(record, operation, connection=None):
     if connection is not None:
         return SyncStatus.of(connection, record, operation)
     return SyncStatus.latest(record, operation)
+
+
+@register.inclusion_tag("qubesync/error.html", takes_context=True)
+def qube_error(context):
+    """The message a route left in the session (a disconnect refused, say), once."""
+    return {"error": take_error(context.get("request"))}

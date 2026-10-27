@@ -4,8 +4,11 @@ framework's response. An app on another framework can do the same.
 
     POST quickbooks/connections                  connect: a connection for the signed-in account
     POST quickbooks/connections/<id>/onboarding  onboarding: one of its connections, through setup again
+    DELETE quickbooks/connections/<id>           disconnect: one of its connections, deleted
+    POST quickbooks/connections/<id>/disconnect  disconnect too, for an HTML form (no DELETE)
     POST webhooks/qube/runs/<id>                 receive("run", ...): a run's webhooks
     POST webhooks/qube/connections/<id>          receive("connection", ...): a connection's
+    POST webhooks/qube/requests/<id>             receive("request", ...): a plain request's
     POST qube/questions/runs/<id>                answer: your user's choice, with its fields
     GET  qube/questions/runs/<id>/search         search: a record field's matches, as JSON
     POST qube/runs/<id>/retry_start              retry_start: an unconfirmed start sent again
@@ -23,10 +26,11 @@ from urllib.parse import urlparse
 from .. import webhooks
 from ..v2 import APIError
 from ._defaults import client
-from ._job import CONNECTION_KIND, RUN_KIND, enqueue_in_process
+from ._job import CONNECTION_KIND, REQUEST_KIND, RUN_KIND, enqueue_in_process
 from ._operation import NETWORK_ERRORS
 from ._settings import settings
-from ._store import CONNECTION, RUN, current_store
+from ._models import ENDED_STATES
+from ._store import CONNECTION, QUEUED_REQUEST, RUN, current_store
 
 log = logging.getLogger("qubesync.kit")
 
@@ -37,12 +41,15 @@ __all__ = [
     "NOT_QUIET",
     "REDELIVERY_REFUSED",
     "NO_ANSWER",
+    "RUNS_GOING",
+    "DISCONNECT_NO_ANSWER",
     "ERROR_KEY",
     "SIGNATURE_HEADER",
     "MAX_WEBHOOK_BODY",
     "receive",
     "connect",
     "onboarding",
+    "disconnect",
     "answer",
     "search",
     "retry_start",
@@ -69,6 +76,8 @@ REDELIVERY_REFUSED = {
     429: "That was asked a moment ago: give it a minute.",
 }
 NO_ANSWER = "QuBe Sync didn't answer: try again in a minute."
+RUNS_GOING = "It has a run or request that hasn't ended: wait for it, or answer its question, first."
+DISCONNECT_NO_ANSWER = "QuBe Sync didn't answer: try disconnecting again in a minute."
 
 # Where an adapter keeps a Reply's error for the templates to show once (session key, cookie).
 ERROR_KEY = "qubesync_error"
@@ -87,7 +96,7 @@ SIGNATURE_HINTS = {
 MAX_WEBHOOK_BODY = 5 * 1024 * 1024
 SIGNATURE_HEADER = webhooks.HEADER
 
-_MODELS = {RUN_KIND: RUN, CONNECTION_KIND: CONNECTION}
+_MODELS = {RUN_KIND: RUN, CONNECTION_KIND: CONNECTION, REQUEST_KIND: QUEUED_REQUEST}
 
 
 class Reply(object):
@@ -114,8 +123,9 @@ class Reply(object):
 def receive(kind, id, body, signature, enqueue=None, path=None):
     # type: (str, Any, Optional[bytes], Optional[str], Optional[Callable[[Dict[str, Any]], Any]], Optional[str]) -> Reply
     """QuBe Sync's webhooks at POST webhooks/qube/runs/<run id>, the URL each run was started
-    with (Run.webhook_url), and at webhooks/qube/connections/<connection id>, each
-    connection's (Connection.webhook_url). It only verifies the delivery, checks the row is
+    with (Run.webhook_url), at webhooks/qube/connections/<connection id>, each connection's
+    (Connection.webhook_url), and at webhooks/qube/requests/<id>, each plain request's
+    (QueuedRequest.webhook_url). It only verifies the delivery, checks the row is
     there and enqueues it, so it answers well inside the 5 seconds QuBe Sync waits: the job
     does the rest.
 
@@ -246,6 +256,52 @@ def onboarding(request, connection_id):
     return _send_to_setup(found)
 
 
+def disconnect(request, connection_id, referer=None, host=None):
+    # type: (Any, Any, Optional[str], Optional[str]) -> Reply
+    """DELETE quickbooks/connections/<id> (or POST .../<id>/disconnect, from a form):
+    disconnects one of the signed-in account's connections. QuBe Sync deletes its connection
+    (already gone counts), then the row goes (Connection.disconnect). Refused while a run or
+    request hasn't ended. Another account's connection answers 404. Back to the page, with why
+    when it didn't go through."""
+    account = _signed_in_account(request)
+    if account is None:
+        return Reply(401, text="Sign in to disconnect QuickBooks Desktop.")
+
+    store = current_store()
+    owner_type, owner_id = store.key_for(account)
+    found = store.get(CONNECTION, connection_id)
+    if not _owned(found, owner_type, owner_id):
+        return Reply(404, text="Not found.")
+    if _work_going(store, found):
+        return back_with_error(RUNS_GOING, 409, referer, host)
+
+    try:
+        _delete_on_qube(found)
+    except NETWORK_ERRORS:
+        return back_with_error(DISCONNECT_NO_ANSWER, 503, referer, host)
+    found.disconnect()
+    return Reply(303, location=back(referer, host))
+
+
+def _work_going(store, connection):
+    # type: (Any, Any) -> bool
+    return store.exists(RUN, connection_id=connection.id, state__not=list(ENDED_STATES)) or store.exists(
+        QUEUED_REQUEST, connection_id=connection.id, ended_at=None
+    )
+
+
+# Already gone there (404) is gone.
+def _delete_on_qube(connection):
+    # type: (Any) -> None
+    if not connection.qube_id:
+        return
+    try:
+        client().delete_connection(connection.qube_id)
+    except APIError as error:
+        if error.status != 404:
+            raise
+
+
 def _signed_in_account(request):
     # type: (Any) -> Any
     account = settings().current_account(request)
@@ -362,7 +418,7 @@ def answer(request, run_id, form, referer=None, host=None):
             return back_with_error(refusal(error), 422, referer, host)
         asked.answered(question.get("token"))
         return back_with_error(CHANGED, 409, referer, host)
-    asked.answered(question.get("token"))
+    asked.answered(question.get("token"), taken=True)
     return Reply(303, location=back(referer, host))
 
 

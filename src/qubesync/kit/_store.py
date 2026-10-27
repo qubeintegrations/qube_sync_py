@@ -1,7 +1,7 @@
 """Where the kit's tables live: the one interface between the kit's code and an ORM.
 
-The kit owns four tables (qube_connections, qube_runs, qube_quickbooks_records and
-qube_notifications). Django keeps them as qubesync.django's models; Flask and FastAPI as the
+The kit owns its tables (qube_connections, qube_runs, qube_quickbooks_records,
+qube_notifications, qube_sync_marks, qube_requests and qube_request_deliveries). Django keeps them as qubesync.django's models; Flask and FastAPI as the
 SQLAlchemy models in qubesync.kit.sqlalchemy. Everything the kit does with them (link a
 QuickBooks id, apply an event under a run's lock, take a notification once) is written once,
 against this interface, so the two ORMs behave the same.
@@ -27,13 +27,17 @@ CONNECTION = "connection"
 RUN = "run"
 QUICKBOOKS_RECORD = "quickbooks_record"
 NOTIFICATION = "notification"
+SYNC_MARK = "sync_mark"
+QUEUED_REQUEST = "queued_request"
+REQUEST_DELIVERY = "request_delivery"
 
 
 class Store(object):
     """What the kit needs from an ORM. Rows are the ORM's own model instances.
 
-    Filters are keyword arguments of column=value; a list or tuple value means "in". order is a
-    list of column names, "-" first for descending."""
+    Filters are keyword arguments of column=value; a list or tuple value means "in", and a
+    column__not=value (or a list) means "not equal" ("not in"). order is a list of column names,
+    "-" first for descending."""
 
     # The exceptions a unique-key violation raises.
     integrity_errors = ()  # type: Tuple[type, ...]
@@ -91,6 +95,24 @@ class Store(object):
         # type: (Any, Any, str, Tuple[str, ...]) -> Any
         """query narrowed to the records with a run of operation on the connection in one of
         states."""
+        raise NotImplementedError
+
+    def prunable(self, model_name, cutoff, states=None):
+        # type: (str, datetime.datetime, Optional[Tuple[str, ...]]) -> Any
+        """The ORM's query of the rows whose COALESCE(ended_at, updated_at) is before cutoff:
+        with states, those in one of them; without, those with an ended_at."""
+        raise NotImplementedError
+
+    def ids(self, query, limit):
+        # type: (Any, int) -> List[Any]
+        """Up to limit ids of the rows query (the ORM's own) finds."""
+        raise NotImplementedError
+
+    def delete_all(self, model_name, **filters):
+        # type: (str, **Any) -> int
+        """Deletes the rows filters find and returns how many. Inside atomic it's part of that
+        transaction; outside, it's committed. Whether children go with them differs by ORM, so
+        the kit deletes the children first."""
         raise NotImplementedError
 
     def save(self, row, fields=None):

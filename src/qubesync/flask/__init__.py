@@ -23,8 +23,11 @@ The routes, relative to url_prefix:
 
     POST /quickbooks/connections                   qubesync_connections.connections
     POST /quickbooks/connections/<id>/onboarding   qubesync_connections.connection_onboarding
+    DELETE /quickbooks/connections/<id>            qubesync_connections.connection (disconnect)
+    POST /quickbooks/connections/<id>/disconnect   qubesync_connections.connection_disconnect (a form's)
     POST /webhooks/qube/runs/<id>                  qubesync_webhooks.run_webhook (no sign-in, no CSRF)
     POST /webhooks/qube/connections/<id>           qubesync_webhooks.connection_webhook (likewise)
+    POST /webhooks/qube/requests/<id>              qubesync_webhooks.request_webhook (likewise)
     POST /qube/questions/runs/<id>                 qubesync_questions.question
     GET  /qube/questions/runs/<id>/search          qubesync_questions.question_search
     POST /qube/runs/<id>/retry_start               qubesync_questions.retry_start
@@ -34,7 +37,8 @@ With Flask-WTF's CSRFProtect set up before the blueprints are registered, the we
 blueprint is exempted from it (QuBe Sync signs its webhooks instead); set up after, call
 csrf.exempt(bps.webhooks) yourself. The templates' forms carry csrf_token() when Flask-WTF
 provides it. init_app registers qube_question(record, operation) and qube_run_status(record,
-operation, connection=None) as Jinja globals, for a record's page. A message from a question or
+operation, connection=None) as Jinja globals, for a record's page, and qube_error(), a route's
+message on a page without them (a disconnect's). A message from a question or
 run route (why it didn't go through) is kept in Flask's session, so it needs a SECRET_KEY;
 without one, the route answers it as text.
 """
@@ -65,6 +69,7 @@ __all__ = [
     "run_status_context",
     "question_html",
     "run_status_html",
+    "error_html",
     "take_error",
     "TEMPLATES",
 ]
@@ -185,6 +190,11 @@ def blueprints(sign_in=None, url_prefix=None):
             kit.receive("connection", id, _raw_body(), signature, enqueue=_in_process, path=request.path)
         )
 
+    @webhooks.route("/webhooks/qube/requests/<id>", methods=["POST"], endpoint="request_webhook")
+    def request_webhook(id):
+        signature = request.headers.get(kit.SIGNATURE_HEADER)
+        return _response(kit.receive("request", id, _raw_body(), signature, enqueue=_in_process, path=request.path))
+
     @webhooks.record_once
     def _exempt_from_csrf(state):
         csrf = state.app.extensions.get("csrf")
@@ -202,6 +212,17 @@ def blueprints(sign_in=None, url_prefix=None):
     @guard
     def onboarding(id):
         return _response(kit.onboarding(request, id))
+
+    @connections.route("/quickbooks/connections/<id>", methods=["DELETE"], endpoint="connection")
+    @guard
+    def disconnect(id):
+        return _response(kit.disconnect(request, id, request.referrer, request.host))
+
+    # The same, for an HTML form, which can't send DELETE.
+    @connections.route("/quickbooks/connections/<id>/disconnect", methods=["POST"], endpoint="connection_disconnect")
+    @guard
+    def disconnect_form(id):
+        return _response(kit.disconnect(request, id, request.referrer, request.host))
 
     questions = Blueprint("qubesync_questions", __name__, url_prefix=url_prefix, template_folder=TEMPLATES)
 
@@ -230,13 +251,16 @@ def blueprints(sign_in=None, url_prefix=None):
 
 def init_app(app, sign_in=None, url_prefix=None):
     # type: (Any, Optional[Callable[[Any], Any]], Optional[str]) -> Blueprints
-    """Registers the three blueprints on app, and qube_question and qube_run_status as Jinja
-    globals, and returns the blueprints."""
+    """Registers the three blueprints on app, and qube_question, qube_run_status,
+    qube_sync_status and qube_error as Jinja globals, and returns the blueprints."""
     bps = blueprints(sign_in=sign_in, url_prefix=url_prefix)
     for bp in bps:
         app.register_blueprint(bp)
     app.jinja_env.globals.update(
-        qube_question=question_html, qube_run_status=run_status_html, qube_sync_status=sync_status
+        qube_question=question_html,
+        qube_run_status=run_status_html,
+        qube_sync_status=sync_status,
+        qube_error=error_html,
     )
     return bps
 
@@ -278,3 +302,9 @@ def run_status_html(record, operation, connection=None, **context):
     """qubesync/run_status.html rendered for record."""
     values = dict(run_status_context(record, operation, connection), **context)
     return Markup(render_template("qubesync/run_status.html", **values))
+
+
+def error_html(**context):
+    # type: (**Any) -> Markup
+    """qubesync/_error.html with the message a route left (a disconnect refused, say), once."""
+    return Markup(render_template("qubesync/_error.html", **dict(error=take_error(), **context)))

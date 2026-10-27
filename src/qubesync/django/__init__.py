@@ -20,14 +20,19 @@ migrations), the routes, and the question and run status templates.
         current_account=lambda request: request.user.account,
     )
 
-The models are qubesync.django.models' Connection, Run, QuickbooksRecord and Notification
-(tables qube_connections, qube_runs, qube_quickbooks_records and qube_notifications). The
-routes, relative to where urls.py includes them, each named in the qubesync namespace:
+The models are qubesync.django.models' Connection, Run, QuickbooksRecord, Notification,
+SyncMark, QueuedRequest and RequestDelivery (tables qube_connections, qube_runs,
+qube_quickbooks_records, qube_notifications, qube_sync_marks, qube_requests and
+qube_request_deliveries). The routes, relative to where urls.py includes them, each named in
+the qubesync namespace:
 
     POST quickbooks/connections                   connections            behind login_required and CSRF
     POST quickbooks/connections/<id>/onboarding   connection_onboarding  behind login_required and CSRF
+    DELETE quickbooks/connections/<id>            connection             behind login_required and CSRF
+    POST quickbooks/connections/<id>/disconnect   connection_disconnect  the same, for a form
     POST webhooks/qube/runs/<id>                  run_webhook            no sign-in, no CSRF (signed)
     POST webhooks/qube/connections/<id>           connection_webhook     no sign-in, no CSRF (signed)
+    POST webhooks/qube/requests/<id>              request_webhook        no sign-in, no CSRF (signed)
     POST qube/questions/runs/<id>                 question               behind login_required and CSRF
     GET  qube/questions/runs/<id>/search          question_search        behind login_required
     POST qube/runs/<id>/retry_start               retry_start            behind login_required and CSRF
@@ -38,6 +43,7 @@ On a record's page:
     {% load qubesync %}
     {% qube_run_status invoice "create_invoice" %}   {# connection=... for one company file #}
     {% qube_question invoice "create_invoice" %}
+    {% qube_error %}   {# a route's message on a page without those two: a disconnect's #}
 """
 try:
     import django as _django  # noqa: F401
@@ -96,7 +102,7 @@ def run_status_context(record, operation, connection=None, request=None):
 
 def take_error(request):
     # type: (Any) -> Any
-    """The message a question or run route left in request's session, removed: shown once."""
+    """The message a route left in request's session, removed: shown once."""
     session = getattr(request, "session", None)
     if session is None:
         return None

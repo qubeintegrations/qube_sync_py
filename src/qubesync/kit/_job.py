@@ -7,7 +7,7 @@ from .. import webhooks
 from ._defaults import default_queue
 from ._errors import UnknownOperation
 from ._settings import settings
-from ._store import CONNECTION, RUN, current_store
+from ._store import CONNECTION, QUEUED_REQUEST, RUN, current_store
 
 log = logging.getLogger("qubesync.kit")
 
@@ -15,6 +15,7 @@ __all__ = ["run", "perform", "enqueue_in_process", "retry_delay"]
 
 RUN_KIND = "run"
 CONNECTION_KIND = "connection"
+REQUEST_KIND = "request"
 
 
 def run(kind, id, body):
@@ -22,7 +23,8 @@ def run(kind, id, body):
     """Runs one verified delivery. kind is "run" (QUBE_WEBHOOK_URL/runs/<id>): the run's
     operation finds its record and handles the event (Operation.handle); or "connection"
     (QUBE_WEBHOOK_URL/connections/<id>): your connection_events class handles it for that
-    connection. The default queue calls it; so does your own queue's worker when the enqueue
+    connection; or "request" (QUBE_WEBHOOK_URL/requests/<id>): the plain request's class
+    handles it (Request.handle). The default queue calls it; so does your own queue's worker when the enqueue
     setting hands deliveries elsewhere.
 
     body is the delivery's raw body, which the webhook route verified: parsed into its typed
@@ -42,8 +44,10 @@ def run(kind, id, body):
         _run_event(id, event)
     elif kind == CONNECTION_KIND:
         _connection_event(id, event)
+    elif kind == REQUEST_KIND:
+        _request_event(id, event)
     else:
-        raise ValueError("QuBe Sync: a delivery is for a run or a connection, not %r" % (kind,))
+        raise ValueError("QuBe Sync: a delivery is for a run, a connection or a request, not %r" % (kind,))
 
 
 def _run_event(id, event):
@@ -63,6 +67,24 @@ def _run_event(id, event):
         return _dropped("run %s's %s %s isn't there" % (found.id, found.record_type, found.record_id), event)
 
     operation(record, found).handle(event)
+
+
+def _request_event(id, event):
+    # type: (Any, Any) -> None
+    store = current_store()
+    found = store.get(QUEUED_REQUEST, id)
+    if found is None:
+        return _dropped("request %s isn't there" % id, event)
+
+    request = settings().operation_class(found.operation)
+    if request is None:
+        raise UnknownOperation("QuBe Sync: no operation has the slug %r" % (found.operation,))
+
+    record = _find_run_record(store, request, found)
+    if record is None:
+        return _dropped("request %s's %s %s isn't there" % (found.id, found.record_type, found.record_id), event)
+
+    request(record, found).handle(event)
 
 
 def _connection_event(id, event):

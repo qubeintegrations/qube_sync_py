@@ -372,16 +372,17 @@ The kit is the part of a QuBe Sync integration that's the same in every app, the
 the [qube_rails](https://rubygems.org/gems/qube_rails) engine:
 
 - tables of its own: your customers' **connections** (an account can have several, one per
-  company file), the **runs** your app starts, the **QuickBooks ids** it learns, each kept
-  against its connection, and the **notifications** each run has taken;
-- onboarding: make a connection for the signed-in account, or send one of its connections back
-  through QuBe Sync's setup;
+  company file), the **runs** your app starts (and any plain **requests**), the **QuickBooks
+  ids** it learns, each kept against its connection, the **notifications** each run has taken,
+  and when each sync last completed;
+- onboarding: make a connection for the signed-in account, send one of its connections back
+  through QuBe Sync's setup, or disconnect one;
 - the webhook endpoints (verify the signature, find the row, enqueue) and their job (check the
   event is that run's or that connection's, apply it, call your handler);
 - the question routes (answer by choice, search a record field), the start retry, the
   redelivery of a stuck run's latest event, and the question and run status templates;
 - each record's sync status with QuickBooks, derived from those tables, and list-page filters;
-- `Operation` and `ConnectionEvents`, the bases of your classes.
+- `Operation`, `Request` and `ConnectionEvents`, the bases of your classes.
 
 It ships in this package, so `pip install -U qubesync` updates it, and your app keeps only its
 own code, which the kit never names. Your own tables need no QuBe columns:
@@ -401,12 +402,13 @@ pip install "qubesync[django]>=0.4.0"    # or [flask], or [fastapi]
 
 | | The kit's tables | Routes | Templates |
 | --- | --- | --- | --- |
-| Django 3.2+ | `qubesync.django.models`, from its migration (`python manage.py migrate qubesync`) | `include("qubesync.django.urls")` | `{% load qubesync %}`, `{% qube_question %}`, `{% qube_run_status %}` |
-| Flask 2+ | `qubesync.kit.sqlalchemy` (SQLAlchemy 1.4+), through your session | `qubesync.flask.init_app(app)` | Jinja globals `qube_question`, `qube_run_status` |
+| Django 3.2+ | `qubesync.django.models`, from its migrations (`python manage.py migrate qubesync`) | `include("qubesync.django.urls")` | `{% load qubesync %}`, `{% qube_question %}`, `{% qube_run_status %}`, `{% qube_error %}` |
+| Flask 2+ | `qubesync.kit.sqlalchemy` (SQLAlchemy 1.4+), through your session | `qubesync.flask.init_app(app)` | Jinja globals `qube_question`, `qube_run_status`, `qube_error` |
 | FastAPI | `qubesync.kit.sqlalchemy`, through your session | `qubesync.fastapi.router()` | `qubesync.fastapi.add_templates(templates)` |
 
-The tables are `qube_connections`, `qube_runs`, `qube_quickbooks_records` and
-`qube_notifications`, with the same columns, unique keys and indexes as qube_rails' (Django
+The tables are `qube_connections`, `qube_runs`, `qube_quickbooks_records`,
+`qube_notifications`, `qube_sync_marks`, `qube_requests` and `qube_request_deliveries`, with the
+same columns, unique keys and indexes as qube_rails' (Django
 names two plain indexes more shortly, as it keeps index names to 30 characters). They work on
 PostgreSQL, MySQL and SQLite: `qube_runs`' `input`, `error`, `question` and `links` are JSON kept
 as text, so no database's JSON type or driver matters, and nothing queries inside them. The
@@ -442,7 +444,7 @@ qubesync.kit.configure(
 | `connection_events` | your `ConnectionEvents` class, or its dotted path | none: raises |
 | `current_account` | `(request) -> account`: the signed-in customer's account, which owns its connections. `None` answers 401 | none: raises |
 | `authorize_question` | `(request, record, run) -> True` when the signed-in user may answer or search that run's question, or send its start again. The run carries its `operation` and its `connection` (whose `owner` connected it). Only `True` allows; anything else answers 404 (search: `[]` with 404), as for a missing run, and is logged | allows only when `current_account` owns the run's connection (compared by type and id, so a `None` or unsaved account never matches); raises `NotConfigured` while `current_account` isn't set |
-| `enqueue` | `(delivery)`: hands `{"kind", "id", "body"}` (kind `"run"` or `"connection"`) to your queue, whose worker calls `qubesync.kit.run(kind, id, body)`. `False` or an exception answers 503 | a worker thread in this process, which retries, with a warning: a restart loses what hasn't run |
+| `enqueue` | `(delivery)`: hands `{"kind", "id", "body"}` (kind `"run"`, `"connection"` or `"request"`) to your queue, whose worker calls `qubesync.kit.run(kind, id, body)`. `False` or an exception answers 503 | a worker thread in this process, which retries, with a warning: a restart loses what hasn't run |
 | `job_attempts` | how many times the default queue runs a delivery whose work raised, with a growing wait, before it logs an error | `10` |
 | `dedupe` | where each run's taken notification delivery ids are kept: `once(run, delivery_id, fn)`, or `seen(key)` / `remember(key)` | `qubesync.kit.DatabaseDedupe`: the `qube_notifications` table, in the handler's transaction |
 | `db_session` | `() -> Session`: your SQLAlchemy session for the request or job at hand (a `scoped_session`, or Flask-SQLAlchemy's `db.session`). Django needs none | none: raises (Flask, FastAPI) |
@@ -452,6 +454,7 @@ qubesync.kit.configure(
 | `webhook_url` | the base of every webhook URL | `QUBE_WEBHOOK_URL` |
 | `client` | a `qubesync.Client` to use instead of the one made from `api_key` and `base_url` (tests) | |
 | `production` | `True` where Connect must refuse `simulated=1` (404) | the adapter's guess: Django `not DEBUG`, Flask `not (app.debug or app.testing)`, FastAPI `not app.debug`; `True` elsewhere |
+| `prune_runs_after` | a `datetime.timedelta` of a day or more: `qubesync.kit.prune_runs()` deletes ended runs and requests older than that ([Storage](#storage)) | `None`: kept |
 
 A setting your app hasn't written raises `qubesync.kit.NotConfigured`, naming that file, the
 first time it's needed, so nothing silently passes. The environment is read at first use.
@@ -525,9 +528,12 @@ Relative to where your app mounts them:
 | --- | --- |
 | `POST quickbooks/connections` | Connect, for the signed-in account (`current_account`). Sends its newest connection that has never connected (`pending` or `setup_cancelled`) back through setup, so clicking Connect again doesn't pile up connections. Makes a new one (the row, then QuBe Sync's connection with the row's webhook URL, then its `qube_id`, with an optional `name`) when the account has none, or with `new=1`. Redirects (303) to the setup. With `simulated=1`, outside production (the `production` setting), it makes a new connection to a simulated QuickBooks company file instead (`create_connection(type="simulated")`, connected as it's made), and redirects (303) back to the page: for testing with no Windows computer. In production that answers 404. |
 | `POST quickbooks/connections/<id>/onboarding` | One of the signed-in account's connections, back through setup, with its webhook URL brought up to date (or made at QuBe Sync, for a row QuBe Sync never answered). Another account's connection answers 404. |
+| `DELETE quickbooks/connections/<id>` | Disconnects one of the signed-in account's connections: QuBe Sync deletes its connection (already gone counts), then the row goes, with its runs, requests, QuickBooks links and sync marks (`connection.disconnect()`). 303 back; refused, with a message, while a run or request hasn't ended, or when QuBe Sync doesn't answer. Another account's connection answers 404. Behind your sign-in and CSRF. |
+| `POST quickbooks/connections/<id>/disconnect` | The same, for an HTML form, which can't send `DELETE` (Django, Flask and FastAPI have no method override). |
 | `POST webhooks/qube/runs/<id>` | A run's webhooks. |
 | `POST webhooks/qube/connections/<id>` | A connection's webhooks. |
-| `POST qube/questions/runs/<id>` | Your user's answer to the run's question, from the template: 303 back to the page, with a message when it didn't go through (the question has changed: a 409, or any 400, from QuBe Sync, and it's forgotten; or QuBe Sync's words for a field it couldn't take, a 422). Behind your sign-in and CSRF. |
+| `POST webhooks/qube/requests/<id>` | A plain request's webhooks ([Plain requests](#plain-requests)). |
+| `POST qube/questions/runs/<id>` | Your user's answer to the run's question, from the template: 303 back to the page. Once QuBe Sync takes it, the run is `running` again (its sync status `sending`) until its next webhook, which waits on the Web Connector's next poll. With a message when it didn't go through (the question has changed: a 409, or any 400, from QuBe Sync, and it's forgotten; or QuBe Sync's words for a field it couldn't take, a 422). Behind your sign-in and CSRF. |
 | `GET qube/questions/runs/<id>/search` | A record field's matches, as JSON (`q` of 2 to 100 characters and a `field`, else `[]`). Behind your sign-in. |
 | `POST qube/runs/<id>/retry_start` | A start QuBe Sync never confirmed, sent again with the same reference, from the run status template: 303 back, with a message for a run that isn't `starting`. Behind your sign-in and CSRF, and `authorize_question`. |
 | `POST qube/runs/<id>/redeliver` | A run that looks stuck (`run.looks_stuck()`: confirmed, not ended, and quiet for 10 minutes while running or waiting on a question this app never got): asks QuBe Sync to send its latest event again (`redeliver_run`), from the run status template's "Send its latest news again" button. 303 back, with a message when QuBe Sync has nothing to send yet (409), was asked a moment ago (429) or didn't answer, or the run isn't quiet. Behind your sign-in and CSRF, and `authorize_question`. |
@@ -535,7 +541,8 @@ Relative to where your app mounts them:
 The webhook routes verify the signature (401 if it doesn't check out), answer 404 when the row
 isn't there, enqueue, and answer 200. No sign-in, no CSRF, the raw
 body, any content type, up to 5 MB (413 beyond, unread). Each id in a URL is only a pointer: the
-job checks the signed event's reference and connection id against the row.
+job checks the signed event's reference and connection id against the row (a request's event,
+its id).
 
 A refused webhook is logged with its reason, its path and what to check, never the secret, the
 signature or the body: `mismatch` (it isn't signed with `QUBE_WEBHOOK_SECRET`: set that to the
@@ -552,6 +559,8 @@ finishing a setup it started), and, once it has one, Connect another company fil
   <input type="hidden" name="new" value="1"><input type="hidden" name="name" value="Second file">
   <button>Connect another company file</button>
 </form>
+<!-- Disconnect: show its message with {% qube_error %} (Flask, FastAPI: qube_error) -->
+<form method="post" action="/quickbooks/connections/{{ connection.id }}/disconnect">{% csrf_token %}<button>Disconnect</button></form>
 <!-- Outside production only: -->
 <form method="post" action="/quickbooks/connections">{% csrf_token %}
   <input type="hidden" name="simulated" value="1"><button>Connect a simulated QuickBooks (for testing)</button>
@@ -569,6 +578,13 @@ say how it stands, and `connection.webhook_url` is where its events go.
 Its own events (`QUBE_WEBHOOK_URL/connections/<id>`) update `status`, `stall_reason` and
 `revision` when the event is for that connection (`qube_id`) and newer than the last one
 applied, under the row's lock. Then your class runs, with `connection` and `owner`.
+
+`connection.disconnect()` deletes the row with its runs (and their notifications), its plain
+requests (and their deliveries), its QuickBooks links and its sync marks, in one transaction,
+after your class's `disconnected()` (no event: the account disconnected it), where you delete
+your own rows that point at it. The disconnect route calls it once QuBe Sync has deleted its
+connection. `connection.last_synced_at("pull_changes")` is when its last completed run of that
+workflow started ([Storage](#storage)).
 
 An event can come before the row has its `qube_id`: a simulated connection sends
 `connection.connected` as it's made, before `create_connection` has answered. Such an event
@@ -601,6 +617,10 @@ class ConnectionEvents(qubesync.kit.ConnectionEvents):
 
     def resumed(self, event):
         self.log_event(event)
+
+    # The account disconnected it: your rows that point at it go in the same transaction.
+    def disconnected(self):
+        SyncSetting.objects.filter(connection_id=self.connection.id).delete()
 ```
 
 #### QuickBooks ids
@@ -738,6 +758,79 @@ run row's lock: one whose reference isn't the run's, or whose `connection_id` is
 connection's, is skipped and logged; a notification is taken once; anything else only when its
 revision is newer than the last applied. Handlers see `self.record`, `self.run` and
 `self.connection`. A handler you don't write logs.
+
+### Plain requests
+
+A workflow is the default: it finds or makes the records an invoice names, checks QuickBooks
+before resending after a lost answer, and asks your user when something needs a choice. Use a
+plain request (one v2 operation, `Client.queue`) for a one-off query, or a write your app
+settles itself: you handle each answer, error and lost answer.
+
+```python
+# quickbooks_desktop/find_customer.py
+import qubesync.kit
+
+
+class FindCustomer(qubesync.kit.Request):
+    operation = "customer.query"  # a v2 operation id
+    slug = "find_customer"
+
+    def params(self):
+        return {"full_name": self.record.name}
+
+    # Each answered page: event.response_json["data"], event.page.
+    def answered(self, event):
+        found = ((event.response_json or {}).get("data") or [None])[0]
+        if found:
+            self.connection.link(self.record, kind="customer", qb_id=found["list_id"], name=found["full_name"])
+
+    # Every page 1..N is in. Optional.
+    def done(self):
+        pass
+
+    # error or discarded: show event.error["user_message"].
+    def failed(self, event):
+        pass
+
+    # QuBe Sync keeps trying (QuickBooks closed, a dialog open). Never resend. Default: logs.
+    def retrying(self, event):
+        pass
+
+    # The answer never came back: QuickBooks may have applied it. Default: failed(event). A query
+    # can be queued again; check a write before resending it.
+    def timed_out(self, event):
+        pass
+```
+
+List it in `operations` with your operations (`"find_customer":
+"quickbooks_desktop.find_customer.FindCustomer"`), and queue it:
+
+```python
+row = FindCustomer.queue(customer, connection)  # a QueuedRequest
+```
+
+`queue` works as `start` does: under the connection row's lock, a request for the same record,
+slug and connection that hasn't ended is returned (`row.reused`) rather than queued again, sent
+again first, with the same params and `Idempotency-Key`, when QuBe Sync never confirmed it (no
+`qube_id`). A new request, with a new key, is made only once the last has ended. The key is the
+row's `reference`, saved before the call. A refusal (a 4xx but 409) marks the row `failed` and
+raises; a timeout, a 5xx or a 409 leaves it `queued` and raises: queue again, or call
+`row.retry_queue()`. `params` that raise mark the row `failed` before anything is sent.
+`find_record` works as an operation's.
+
+The request's webhook URL is `QUBE_WEBHOOK_URL/requests/<row id>`. Each delivery is taken once,
+by `page_request_id` and `state` (in `qube_request_deliveries`, written in the handler's
+transaction), under the row's lock. An event whose `id` isn't the row's `qube_id` is skipped and
+logged (request webhooks carry no connection id; before the queue's answer is saved, the first
+event's `id` is kept). Pages can come in any order: `done` is called once, when every page from 1
+to the one whose `iteration_state` is `done` is in (`not_applicable` is one page). A `retryable`
+isn't final, and one that arrives after its page's answer is skipped.
+
+A `QueuedRequest` keeps `operation`, `record`, `connection`, `reference`, `qube_id`, `params`,
+`state` (`queued`, `retryable`, `response_received`, `error`, `timed_out`, `discarded`, or
+`failed` for a refused queue), `error` (the webhook's), `pages_answered`, `last_page` and
+`ended_at` (`ended()`, `done()`). It never keeps a response body: your handler stores what it
+needs. A delivery whose handler raises rolls back with it, so the job's retry runs it again.
 
 ### Run status
 
@@ -899,8 +992,8 @@ app.include_router(qubesync.fastapi.router(dependencies=[Depends(signed_in)]))
 
 ### Another framework
 
-`qubesync.kit.receive`, `connect`, `onboarding`, `answer`, `search`, `retry_start` and
-`redeliver` do each route's work and return a `Reply` (`status`, and `text`, `json` or
+`qubesync.kit.receive`, `connect`, `onboarding`, `disconnect`, `answer`, `search`,
+`retry_start` and `redeliver` do each route's work and return a `Reply` (`status`, and `text`, `json` or
 `location`); an adapter reads the request, calls one, and writes the response. A `Reply` with an
 `error` is a redirect back whose message the adapter keeps for the page (or, when it can't,
 answers its `fallback` instead). `qubesync.kit.question_context` and `run_status_context` are the
@@ -914,12 +1007,29 @@ the kit doesn't: a reload shows the next question or the ending.
 
 ### Storage
 
-Rows go with their run: deleting a run deletes its notifications. Runs themselves are yours to
-prune once you no longer need them, for instance from a scheduled job:
+Rows go with their run: deleting a run deletes its notifications, and deleting a plain request
+its deliveries. Disconnecting a connection deletes its runs and requests. Runs are kept until you
+say otherwise. To prune ended ones, set `prune_runs_after` and schedule
+`qubesync.kit.prune_runs()` once a day (cron, Celery beat):
 
 ```python
-Run.objects.filter(state__in=["completed", "failed", "cancelled"], ended_at__lt=now() - timedelta(days=90)).delete()
+qubesync.kit.configure(prune_runs_after=datetime.timedelta(days=90))
+
+@app.task
+def prune_qube_runs():
+    qubesync.kit.prune_runs()
 ```
+
+It deletes only ended runs (`Run.prunable(older_than)`: completed, failed or cancelled, by
+`ended_at`, or `updated_at` for a run that failed before it started) and ended plain requests
+(`QueuedRequest.prunable(older_than)`), with their notifications and deliveries, in batches of
+500, never within a day of their end: a webhook for a deleted row answers 404, which QuBe Sync
+retries for hours. What a record's page shows stays right: `in_quickbooks` comes from
+`qube_quickbooks_records`, which are never pruned, and a sync's next `since` from
+`qube_sync_marks` (`connection.last_synced_at(workflow)`, or `self.last_synced_at()` in an
+operation: when the connection's last completed run of that workflow started, aware UTC), which
+each completed run moves forward, never back. A pruned run's record whose run had failed, or
+completed without a link, shows `not_sent` again.
 
 ## v1 (legacy)
 

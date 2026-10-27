@@ -47,21 +47,36 @@ def test_the_app_imports_the_config_module_and_registers_its_store():
 
 
 def test_the_tables_are_the_rails_engines():
-    from qubesync.django.models import Connection, Notification, QuickbooksRecord, Run
+    from qubesync.django.models import (
+        Connection,
+        Notification,
+        QueuedRequest,
+        QuickbooksRecord,
+        RequestDelivery,
+        Run,
+        SyncMark,
+    )
 
-    assert [m._meta.db_table for m in (Connection, Run, QuickbooksRecord, Notification)] == [
+    models = (Connection, Run, QuickbooksRecord, Notification, SyncMark, QueuedRequest, RequestDelivery)
+    assert [m._meta.db_table for m in models] == [
         "qube_connections",
         "qube_runs",
         "qube_quickbooks_records",
         "qube_notifications",
+        "qube_sync_marks",
+        "qube_requests",
+        "qube_request_deliveries",
     ]
-    names = {c.name for m in (Connection, Run, QuickbooksRecord, Notification) for c in m._meta.constraints}
+    names = {c.name for m in models for c in m._meta.constraints}
     assert names == {
         "index_qube_connections_on_qube_id",
         "index_qube_runs_on_reference",
         "index_qube_quickbooks_records_on_qb_id",
         "index_qube_quickbooks_records_on_record",
         "index_qube_notifications_on_run_and_delivery",
+        "index_qube_sync_marks_on_connection_and_workflow",
+        "index_qube_requests_on_reference",
+        "index_qube_request_deliveries_on_request_and_key",
     }
 
 
@@ -70,6 +85,9 @@ def test_the_routes_are_named_in_the_qubesync_namespace():
     assert reverse("qubesync:connection_onboarding", args=[3]) == "/quickbooks/connections/3/onboarding"
     assert reverse("qubesync:run_webhook", args=[3]) == "/webhooks/qube/runs/3"
     assert reverse("qubesync:connection_webhook", args=[3]) == "/webhooks/qube/connections/3"
+    assert reverse("qubesync:request_webhook", args=[3]) == "/webhooks/qube/requests/3"
+    assert reverse("qubesync:connection", args=[3]) == "/quickbooks/connections/3"
+    assert reverse("qubesync:connection_disconnect", args=[3]) == "/quickbooks/connections/3/disconnect"
     assert reverse("qubesync:question", args=[3]) == "/qube/questions/runs/3"
     assert reverse("qubesync:question_search", args=[3]) == "/qube/questions/runs/3/search"
     assert reverse("qubesync:retry_start", args=[3]) == "/qube/runs/3/retry_start"
@@ -94,6 +112,8 @@ def test_the_posts_are_csrf_checked_and_the_webhooks_arent(app, world, account):
     assert client.post("/quickbooks/connections").status_code == 403
     assert client.post("/qube/questions/runs/%s" % run.id, {"choice": "use:1"}).status_code == 403
     assert client.post("/qube/runs/%s/retry_start" % run.id).status_code == 403
+    assert client.delete("/quickbooks/connections/%s" % run.connection_id).status_code == 403
+    assert client.post("/quickbooks/connections/%s/disconnect" % run.connection_id).status_code == 403
 
     body = run_body("workflow_run.completed", run)
     response = Client(enforce_csrf_checks=True).generic(
@@ -129,7 +149,7 @@ def test_patterns_takes_another_sign_in():
 
     urls.patterns(sign_in=staff_only)
 
-    assert sorted(seen) == ["answer", "connect", "onboarding", "redeliver", "retry_start", "search"]
+    assert sorted(seen) == ["answer", "connect", "disconnect", "disconnect_form", "onboarding", "redeliver", "retry_start", "search"]
 
 
 def test_the_template_tags_render_with_the_pages_csrf_token(app, world, account):

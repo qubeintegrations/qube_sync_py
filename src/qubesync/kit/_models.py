@@ -1,4 +1,5 @@
-"""What the kit's models do, whichever ORM keeps them: Connection, Run and QuickbooksRecord.
+"""What the kit's models do, whichever ORM keeps them: Connection, Run, QuickbooksRecord and
+QueuedRequest.
 
 qubesync.django.models and qubesync.kit.sqlalchemy declare the tables and mix these in, so a
 Django Connection and a SQLAlchemy one link, adopt and summarise the same way. Each reaches its
@@ -13,7 +14,17 @@ from urllib.parse import quote
 from ._defaults import client
 from ._errors import UnknownOperation
 from ._settings import settings
-from ._store import CONNECTION, QUICKBOOKS_RECORD, RUN, parse_time
+from ._store import (
+    CONNECTION,
+    NOTIFICATION,
+    QUEUED_REQUEST,
+    QUICKBOOKS_RECORD,
+    REQUEST_DELIVERY,
+    RUN,
+    SYNC_MARK,
+    current_store,
+    parse_time,
+)
 
 log = logging.getLogger("qubesync.kit")
 
@@ -21,7 +32,10 @@ __all__ = [
     "ConnectionMixin",
     "RunMixin",
     "QuickbooksRecordMixin",
+    "QueuedRequestMixin",
     "family_for",
+    "prune_runs",
+    "advance_sync_mark",
     "dump_json",
     "load_json",
     "STATUSES",
@@ -41,6 +55,11 @@ UNCONFIRMED_AFTER_SECONDS = 60
 
 # How long a confirmed run may go without news before the status offers a redelivery.
 QUIET_AFTER_SECONDS = 10 * 60
+
+# Nothing ended less than a day ago is pruned: a webhook for a deleted row answers 404, which
+# QuBe Sync retries for hours.
+MIN_PRUNE_AGE = datetime.timedelta(days=1)
+PRUNE_BATCH = 500
 
 # The run states the sync status scopes look for.
 ASKING_STATES = ("awaiting_input",)
@@ -150,6 +169,29 @@ class ConnectionMixin(object):
         from ._sync_status import SyncStatus
 
         return SyncStatus.of(self, record, operation)
+
+    def last_synced_at(self, workflow):
+        # type: (Any) -> Optional[datetime.datetime]
+        """When its last completed run of workflow started (aware UTC), or None before one: a
+        sync's next since. Kept in qube_sync_marks, so pruning runs never loses it."""
+        mark = self._kit_store.first(SYNC_MARK, connection_id=self.id, workflow=str(workflow))
+        return self._kit_store.utc(mark.started_at) if mark is not None else None
+
+    def disconnect(self):
+        # type: () -> None
+        """Deletes the row, with its runs (and their notifications), its plain requests (and
+        their deliveries), its QuickBooks links and its sync marks, after your ConnectionEvents'
+        disconnected(), all in one transaction: for a connection QuBe Sync no longer has. The
+        disconnect route deletes QuBe Sync's first."""
+        store = self._kit_store
+        with store.atomic():
+            settings().connection_events_class()(self).disconnected()
+            _delete_with(store, store.query(RUN, connection_id=self.id), RUN, NOTIFICATION, "run_id")
+            requests = store.query(QUEUED_REQUEST, connection_id=self.id)
+            _delete_with(store, requests, QUEUED_REQUEST, REQUEST_DELIVERY, "request_id")
+            store.delete_all(QUICKBOOKS_RECORD, connection_id=self.id)
+            store.delete_all(SYNC_MARK, connection_id=self.id)
+            store.delete(self)
 
     def in_quickbooks(self, query):
         # type: (Any) -> Any
@@ -409,6 +451,13 @@ class RunMixin(object):
             operation=str(operation),
         )
 
+    @classmethod
+    def prunable(cls, older_than):
+        # type: (datetime.timedelta) -> Any
+        """Ended runs whose end (ended_at, else updated_at: a run that failed before it started
+        has none) is older than older_than, and never under a day, as the ORM's query."""
+        return cls._kit_store.prunable(RUN, _cutoff(cls._kit_store, older_than), ENDED_STATES)
+
     @property
     def record(self):
         # type: () -> Any
@@ -576,3 +625,130 @@ class QuickbooksRecordMixin(object):
         if self.record_type is None:
             return None
         return self._kit_store.resolve(self.record_type, self.record_id)
+
+
+class QueuedRequestMixin(object):
+    """One plain v2 request (qubesync.kit.Request.queue) for one of your records, on one
+    connection. Written before it's sent; its webhook URL is QUBE_WEBHOOK_URL/requests/<id>.
+
+    operation is the Request's slug. reference is the Idempotency-Key, params what was sent.
+    state is "queued", "retryable", "response_received", "error", "timed_out", "discarded", or
+    "failed" (QuBe Sync refused the queue, or params raised); error is the webhook's.
+    pages_answered and last_page count the pages in; ended_at is set once every page is in,
+    or on a final error. It never keeps a response body.
+    """
+
+    _kit_store = None  # type: Any
+
+    # True on the row Request.queue returned instead of queueing another. Not saved.
+    reused = False
+
+    @classmethod
+    def latest_for(cls, record, operation):
+        # type: (Any, str) -> Any
+        """record's newest request of operation (a slug), or None."""
+        type_name, id = cls._kit_store.key_for(record)
+        return cls._kit_store.first(
+            QUEUED_REQUEST,
+            order=["-created_at", "-id"],
+            record_type=type_name,
+            record_id=id,
+            operation=str(operation),
+        )
+
+    @classmethod
+    def prunable(cls, older_than):
+        # type: (datetime.timedelta) -> Any
+        """Ended requests older than older_than (never under a day), as the ORM's query."""
+        return cls._kit_store.prunable(QUEUED_REQUEST, _cutoff(cls._kit_store, older_than))
+
+    @property
+    def record(self):
+        # type: () -> Any
+        return self._kit_store.resolve(self.record_type, self.record_id)
+
+    @record.setter
+    def record(self, record):
+        # type: (Any) -> None
+        self.record_type, self.record_id = self._kit_store.key_for(record)
+
+    @property
+    def webhook_url(self):
+        # type: () -> str
+        return "%s/requests/%s" % (settings().webhook_url, _quoted(self.id))
+
+    def ended(self):
+        # type: () -> bool
+        return self.ended_at is not None
+
+    def done(self):
+        # type: () -> bool
+        """Every page answered."""
+        return self.ended() and self.state == "response_received"
+
+    def retry_queue(self):
+        # type: () -> Any
+        """Sends a queue QuBe Sync never confirmed again: same params and Idempotency-Key."""
+        request = settings().operation_class(self.operation)
+        if request is None:
+            raise UnknownOperation("QuBe Sync: no operation has the slug %r" % (self.operation,))
+        return request.retry_queue(self)
+
+
+def _cutoff(store, older_than):
+    # type: (Any, datetime.timedelta) -> datetime.datetime
+    if not isinstance(older_than, datetime.timedelta):
+        raise TypeError("QuBe Sync: older_than is a datetime.timedelta")
+    return store.now() - max(older_than, MIN_PRUNE_AGE)
+
+
+def _delete_with(store, query, model_name, child, foreign_key):
+    # type: (Any, Any, str, str, str) -> int
+    # In batches: the children of each first, since only some ORMs cascade.
+    deleted = 0
+    while True:
+        ids = store.ids(query, PRUNE_BATCH)
+        if not ids:
+            return deleted
+        with store.atomic():
+            store.delete_all(child, **{foreign_key: ids})
+            count = store.delete_all(model_name, id=ids)
+        if not count:
+            return deleted
+        deleted += count
+
+
+def prune_runs():
+    # type: () -> None
+    """Deletes ended runs older than the prune_runs_after setting (Run.prunable), with their
+    notifications, and ended plain requests (QueuedRequest.prunable) with their deliveries.
+    QuickBooks links and sync marks stay. Does nothing until the setting is set: schedule it
+    (cron, Celery beat) once a day."""
+    after = settings().prune_runs_after
+    if after is None:
+        return
+    store = current_store()
+    _delete_with(store, store.model(RUN).prunable(after), RUN, NOTIFICATION, "run_id")
+    _delete_with(store, store.model(QUEUED_REQUEST).prunable(after), QUEUED_REQUEST, REQUEST_DELIVERY, "request_id")
+
+
+def advance_sync_mark(connection, workflow, started_at):
+    # type: (Any, Any, datetime.datetime) -> None
+    """Moves connection's mark for workflow to started_at, never back: runs can complete out
+    of order."""
+    store = connection._kit_store
+    workflow = str(workflow)
+    for attempt in range(2):
+        try:
+            # A savepoint, so a unique-key race inside the handler's transaction can be retried.
+            with store.atomic(savepoint=True):
+                mark = store.first(SYNC_MARK, lock=True, connection_id=connection.id, workflow=workflow)
+                if mark is None:
+                    store.save(store.new(SYNC_MARK, connection_id=connection.id, workflow=workflow, started_at=started_at))
+                elif store.utc(mark.started_at) < store.utc(started_at):
+                    mark.started_at = started_at
+                    store.save(mark)
+                return
+        except store.integrity_errors:
+            if attempt:
+                raise

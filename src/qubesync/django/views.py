@@ -4,15 +4,18 @@ from typing import Optional
 
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from .. import kit
 
 __all__ = [
     "connect",
     "onboarding",
+    "disconnect",
+    "disconnect_form",
     "run_webhook",
     "connection_webhook",
+    "request_webhook",
     "answer",
     "search",
     "retry_start",
@@ -65,6 +68,26 @@ def onboarding(request, id):
     return response(kit.onboarding(request, id))
 
 
+@require_http_methods(["DELETE"])
+def disconnect(request, id):
+    # type: (HttpRequest, str) -> HttpResponse
+    """DELETE quickbooks/connections/<id>: qubesync.kit.disconnect."""
+    return _disconnect(request, id)
+
+
+@require_POST
+def disconnect_form(request, id):
+    # type: (HttpRequest, str) -> HttpResponse
+    """POST quickbooks/connections/<id>/disconnect: the same, from a form, which can't send DELETE."""
+    return _disconnect(request, id)
+
+
+def _disconnect(request, id):
+    # type: (HttpRequest, str) -> HttpResponse
+    referer = request.headers.get("Referer")
+    return response(kit.disconnect(request, id, referer, request.get_host()), request)
+
+
 @csrf_exempt  # QuBe Sync signs its webhooks instead
 @require_POST
 def run_webhook(request, id):
@@ -79,6 +102,14 @@ def connection_webhook(request, id):
     # type: (HttpRequest, str) -> HttpResponse
     """POST webhooks/qube/connections/<id>: qubesync.kit.receive."""
     return _receive(request, "connection", id)
+
+
+@csrf_exempt
+@require_POST
+def request_webhook(request, id):
+    # type: (HttpRequest, str) -> HttpResponse
+    """POST webhooks/qube/requests/<id>: qubesync.kit.receive."""
+    return _receive(request, "request", id)
 
 
 def _receive(request, kind, id):

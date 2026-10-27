@@ -28,7 +28,7 @@ from kit_support import (  # noqa: F401
     vector_body,
     vector_prompt,
 )
-from kit_worlds import CreateInvoice, SyncCustomer, make_driver
+from kit_worlds import ConnectionEvents, CreateInvoice, SyncCustomer, make_driver
 
 
 @pytest.fixture(params=["django", "flask", "fastapi"])
@@ -232,6 +232,94 @@ class TestOnboarding:
         assert client.calls == []
 
 
+class TestDisconnect:
+    @pytest.fixture
+    def connection(self, world, account):
+        return world.connection(account)
+
+    def disconnect(self, http, connection, account, form=False):
+        headers = {"Referer": "/connections"}
+        if form:
+            return http.post("/quickbooks/connections/%s/disconnect" % connection.id, account=account, headers=headers)
+        return http.delete("/quickbooks/connections/%s" % connection.id, account=account, headers=headers)
+
+    def errors(self, http, account):
+        response = http.get("/connections", account=account)
+        assert response.status == 200
+        return [html.unescape(text) for text in re.findall(r'<p class="qube-error">([^<]*)</p>', response.text)]
+
+    @pytest.mark.parametrize("form", [False, True])
+    def test_deletes_quickbooks_syncs_connection_then_the_row_and_goes_back(self, http, world, account, connection, client, form):
+        run = world.run(world.invoice(account), connection, state="completed")
+
+        response = self.disconnect(http, connection, account, form=form)
+
+        assert (response.status, response.location) == (303, "/connections")
+        assert client.called("delete_connection") == [("delete_connection", (QUBE_ID,), {})]
+        assert world.count(world.Connection, id=connection.id) == 0
+        assert world.count(world.Run, id=run.id) == 0
+        assert ConnectionEvents.calls == [("disconnected", connection.id, True)]
+
+    def test_counts_a_connection_already_gone_at_quickbooks_sync_as_gone(self, http, world, account, connection, client):
+        client.raises["delete_connection"] = api_error(404, {"code": "not_found"})
+
+        assert self.disconnect(http, connection, account).status == 303
+        assert world.count(world.Connection, id=connection.id) == 0
+
+    def test_deletes_a_row_quickbooks_sync_never_made_without_asking_it(self, http, world, account, client):
+        connection = world.connection(account, qube_id=None, status="pending")
+
+        assert self.disconnect(http, connection, account).status == 303
+        assert client.called("delete_connection") == []
+        assert world.count(world.Connection, id=connection.id) == 0
+
+    @pytest.mark.parametrize("what", ["run", "request"])
+    def test_refuses_while_a_run_or_request_hasnt_ended_saying_why(self, http, world, account, connection, client, what):
+        if what == "run":
+            world.run(world.invoice(account), connection, state="awaiting_input")
+        else:
+            world.request(world.customer(account), connection, state="retryable")
+
+        response = self.disconnect(http, connection, account)
+
+        assert response.status == 303
+        assert client.called("delete_connection") == []
+        assert world.count(world.Connection, id=connection.id) == 1
+        assert self.errors(http, account) == [kit.RUNS_GOING]
+        assert self.errors(http, account) == []  # once
+
+    def test_keeps_the_row_and_says_so_when_quickbooks_sync_doesnt_answer(self, http, world, account, connection, client):
+        client.raises["delete_connection"] = timeout()
+
+        assert self.disconnect(http, connection, account).status == 303
+        assert world.count(world.Connection, id=connection.id) == 1
+        assert self.errors(http, account) == ["QuBe Sync didn't answer: try disconnecting again in a minute."]
+
+    def test_raises_for_anything_else_quickbooks_sync_answers(self, http, world, account, connection, client):
+        client.raises["delete_connection"] = api_error(500, "boom")
+
+        with pytest.raises(kit.APIError):
+            self.disconnect(http, connection, account)
+        assert world.count(world.Connection, id=connection.id) == 1
+
+    def test_answers_404_for_another_accounts_connection_and_asks_nothing(self, http, world, connection, client):
+        response = self.disconnect(http, connection, world.account("Someone else"))
+
+        assert response.status == 404
+        assert client.calls == []
+        assert world.count(world.Connection, id=connection.id) == 1
+
+    def test_answers_404_for_a_connection_that_isnt_there(self, http, account):
+        assert http.delete("/quickbooks/connections/0", account=account).status == 404
+        assert http.post("/quickbooks/connections/nope/disconnect", account=account).status == 404
+
+    def test_is_behind_the_apps_sign_in(self, http, world, connection, client):
+        signed_out(http, http.delete("/quickbooks/connections/%s" % connection.id))
+        signed_out(http, http.post("/quickbooks/connections/%s/disconnect" % connection.id))
+        assert client.calls == []
+        assert world.count(world.Connection, id=connection.id) == 1
+
+
 # -- Webhooks --------------------------------------------------------------------------------
 
 
@@ -414,6 +502,45 @@ class TestConnectionWebhook:
         assert (connection.qube_id, connection.status) == (QUBE_ID, "connected")
 
 
+class TestRequestWebhook:
+    @pytest.fixture
+    def row(self, world, account):
+        return world.request(world.customer(account), world.connection(account))
+
+    def deliver(self, http, id, body, header):
+        return http.post("/webhooks/qube/requests/%s" % id, body=body, headers={"X-QUBE-Signature": header})
+
+    def test_verifies_enqueues_the_raw_body_and_answers_200(self, http, row, queued):
+        body = vector_body("request: a page of a paginated query")
+
+        assert self.deliver(http, row.id, body, sign(body)).status == 200
+        assert queued == [{"kind": "request", "id": str(row.id), "body": body}]
+
+    def test_answers_404_for_a_request_that_isnt_there(self, http, queued):
+        body = vector_body("request: an answer")
+
+        assert self.deliver(http, 0, body, sign(body)).status == 404
+        assert queued == []
+
+    def test_refuses_a_bad_signature_with_401(self, http, row, queued):
+        body = vector_body("request: an answer")
+
+        assert self.deliver(http, row.id, body, sign(body, secret="whsec_no")).status == 401
+
+    def test_answers_413_for_a_body_over_5_mb(self, http, row, queued):
+        huge = "x" * (5 * 1024 * 1024 + 1)
+
+        assert self.deliver(http, row.id, huge, sign(huge)).status == 413
+
+    def test_the_default_queue_runs_the_request_after_the_response(self, http, world, row):
+        body = vector_body("request: an answer")
+
+        assert self.deliver(http, row.id, body, sign(body)).status == 200
+        drain()
+
+        assert world.reload(row).done()
+
+
 # -- Questions -------------------------------------------------------------------------------
 
 
@@ -439,6 +566,22 @@ class TestAnswer:
         ]
         assert (response.status, response.location) == (303, "/invoices/%s" % invoice.id)
         assert world.reload(run).question is None
+
+    def test_puts_the_run_back_to_running_once_quickbooks_sync_takes_the_answer(self, http, world, account, invoice, run):
+        run = world.update(run, state="awaiting_input")
+
+        self.answer(http, run, {"choice": "use:1"}, account, invoice)
+
+        assert world.reload(run).state == "running"
+
+    def test_leaves_the_state_alone_when_quickbooks_sync_says_it_changed(self, http, world, account, invoice, run, client):
+        run = world.update(run, state="awaiting_input")
+        client.raises["answer"] = api_error(409, {"code": "prompt_changed"})
+
+        self.answer(http, run, {"choice": "use:1"}, account, invoice)
+
+        run = world.reload(run)
+        assert (run.state, run.question) == ("awaiting_input", None)
 
     def test_sends_an_unticked_checkbox_as_false_and_a_number_it_cant_read_as_typed(self, http, account, invoice, run, client):
         self.answer(http, run, {"choice": "add", "data[count]": "three"}, account, invoice)

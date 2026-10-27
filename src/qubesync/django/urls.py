@@ -2,7 +2,7 @@
 
     urlpatterns += [path("", include("qubesync.django.urls"))]
 
-Onboarding, the questions, the start retry and the redelivery are behind Django's login_required (LOGIN_URL),
+Onboarding, disconnecting, the questions, the start retry and the redelivery are behind Django's login_required (LOGIN_URL),
 and the POSTs behind Django's CSRF middleware. With another sign-in, include
 patterns(sign_in=your_decorator) instead:
 
@@ -35,10 +35,15 @@ def patterns(sign_in=None):
         # your app: it tells the connection by webhook.
         path("quickbooks/connections", sign_in(views.connect), name="connections"),
         path("quickbooks/connections/<str:id>/onboarding", sign_in(views.onboarding), name="connection_onboarding"),
-        # Each run's webhook URL is QUBE_WEBHOOK_URL/runs/<run id>, and a connection's is
-        # QUBE_WEBHOOK_URL/connections/<connection id>.
+        # Disconnect: DELETE, or a form's POST to .../disconnect.
+        path("quickbooks/connections/<str:id>", sign_in(views.disconnect), name="connection"),
+        path("quickbooks/connections/<str:id>/disconnect", sign_in(views.disconnect_form), name="connection_disconnect"),
+        # Each run's webhook URL is QUBE_WEBHOOK_URL/runs/<run id>, a connection's is
+        # QUBE_WEBHOOK_URL/connections/<connection id>, and a plain request's
+        # QUBE_WEBHOOK_URL/requests/<id>.
         path("webhooks/qube/runs/<str:id>", views.run_webhook, name="run_webhook"),
         path("webhooks/qube/connections/<str:id>", views.connection_webhook, name="connection_webhook"),
+        path("webhooks/qube/requests/<str:id>", views.request_webhook, name="request_webhook"),
         # A start QuBe Sync never confirmed, sent again, from the run status template.
         path("qube/runs/<str:id>/retry_start", sign_in(views.retry_start), name="retry_start"),
         # A run that looks stuck, its latest event sent again, from the run status template.

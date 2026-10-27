@@ -1,5 +1,6 @@
-"""The kit's tables as Django models: Connection, Run, QuickbooksRecord and Notification, from
-qubesync.django's migrations (python manage.py migrate qubesync).
+"""The kit's tables as Django models: Connection, Run, QuickbooksRecord, Notification, SyncMark,
+QueuedRequest and RequestDelivery, from qubesync.django's migrations (python manage.py migrate
+qubesync).
 
 The polymorphic columns (owner_type, record_type) keep your model's label (myapp.Invoice), and
 owner_id and record_id are strings, so integer and UUID keys both fit. input, error, question
@@ -8,11 +9,11 @@ keys inside MySQL's 3072-byte limit under utf8mb4.
 """
 from django.db import models
 
-from ..kit._models import STATUSES, ConnectionMixin, QuickbooksRecordMixin, RunMixin, family_for
+from ..kit._models import STATUSES, ConnectionMixin, QueuedRequestMixin, QuickbooksRecordMixin, RunMixin, family_for
 from .fields import JSONTextField
 from .store import STORE
 
-__all__ = ["Connection", "Run", "QuickbooksRecord", "Notification"]
+__all__ = ["Connection", "Run", "QuickbooksRecord", "Notification", "SyncMark", "QueuedRequest", "RequestDelivery"]
 
 
 class Connection(ConnectionMixin, models.Model):
@@ -148,6 +149,83 @@ class QuickbooksRecord(QuickbooksRecordMixin, models.Model):
 
     def __str__(self):
         return "QuickbooksRecord %s (%s %s)" % (self.pk, self.kind, self.qb_id)
+
+
+class SyncMark(models.Model):
+    """When a connection's last completed run of a workflow started (Connection.last_synced_at):
+    a sync's next since, kept apart from qube_runs so pruning runs never loses it."""
+
+    id = models.BigAutoField(primary_key=True)
+    connection = models.ForeignKey(Connection, on_delete=models.CASCADE, related_name="sync_marks", db_index=False)
+    workflow = models.CharField(max_length=100)
+    started_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "qubesync"
+        db_table = "qube_sync_marks"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["connection", "workflow"], name="index_qube_sync_marks_on_connection_and_workflow"
+            )
+        ]
+
+
+class QueuedRequest(QueuedRequestMixin, models.Model):
+    __doc__ = QueuedRequestMixin.__doc__
+
+    _kit_store = STORE
+
+    id = models.BigAutoField(primary_key=True)
+    connection = models.ForeignKey(Connection, on_delete=models.PROTECT, related_name="queued_requests", db_index=False)
+    operation = models.CharField(max_length=100)
+    record_type = models.CharField(max_length=100)
+    record_id = models.CharField(max_length=255)
+    reference = models.CharField(max_length=255)
+    qube_id = models.CharField(max_length=255, null=True, blank=True)
+    state = models.CharField(max_length=50, default="queued")
+    params = JSONTextField(null=True, blank=True)
+    error = JSONTextField(null=True, blank=True)
+    pages_answered = models.IntegerField(default=0)
+    last_page = models.IntegerField(null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        app_label = "qubesync"
+        db_table = "qube_requests"
+        constraints = [models.UniqueConstraint(fields=["reference"], name="index_qube_requests_on_reference")]
+        indexes = [
+            models.Index(
+                fields=["connection", "record_type", "record_id", "operation", "created_at"], name="qube_requests_record"
+            )
+        ]
+
+    def __str__(self):
+        return "QueuedRequest %s (%s, %s)" % (self.pk, self.operation, self.state)
+
+
+class RequestDelivery(models.Model):
+    """A request webhook its handler has taken, by page_request_id:state, written in the
+    handler's transaction. Deleted with its request."""
+
+    id = models.BigAutoField(primary_key=True)
+    request = models.ForeignKey(QueuedRequest, on_delete=models.CASCADE, related_name="deliveries", db_index=False)
+    dedupe_key = models.CharField(max_length=200)
+    page = models.IntegerField(null=True, blank=True)
+    state = models.CharField(max_length=50)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        app_label = "qubesync"
+        db_table = "qube_request_deliveries"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["request", "dedupe_key"], name="index_qube_request_deliveries_on_request_and_key"
+            )
+        ]
 
 
 def _kind_without_list(update_fields):

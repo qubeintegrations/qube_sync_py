@@ -9,6 +9,7 @@ import requests
 from ..v2 import APIError
 from ._defaults import client
 from ._errors import NotConnected
+from ._models import advance_sync_mark
 from ._settings import settings
 from ._store import RUN
 
@@ -259,6 +260,12 @@ class Operation(object):
         (connection.qb_id_for)."""
         return self.__dict__.get("_connection") or self.run.connection
 
+    def last_synced_at(self):
+        # type: () -> Any
+        """When this connection's last completed run of this operation's workflow started (aware
+        UTC), or None before one: an incremental sync's since."""
+        return self.connection.last_synced_at(self.workflow)
+
     def input(self):
         # type: () -> Mapping[str, Any]
         """The run's input, from the record. Each operation says how: a dict, or what an input
@@ -376,10 +383,12 @@ class Operation(object):
             )
         return linked
 
-    def answered(self, token):
-        # type: (Optional[str]) -> None
+    def answered(self, token, taken=False):
+        # type: (Optional[str], bool) -> None
         """After your user's choice is in: the question is forgotten, unless the run has asked
-        another since (its token is the question's own)."""
+        another since (its token is the question's own). taken: QuBe Sync took the answer, so
+        the run is "running" again until its next webhook, which waits on the Web Connector's
+        next poll."""
         store = self.run._kit_store
         with store.locked(self.run) as run:
             self.run = run
@@ -387,6 +396,8 @@ class Operation(object):
             if question and question.get("token") == token:
                 run.question = None
                 run.links = None
+                if taken:
+                    run.state = "running"
                 store.save(run)
 
     def without_nils(self, value):
@@ -451,6 +462,7 @@ class Operation(object):
         if event.event == AWAITING_INPUT:
             self.question(event)
         elif event.event == COMPLETED:
+            advance_sync_mark(run.connection, type(self).workflow, run.created_at)
             self.ended(event)
         elif self._stopped(event):
             self.failed(event)

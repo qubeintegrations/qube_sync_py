@@ -13,6 +13,7 @@ Your app sets them once, in quickbooks_desktop/config.py:
 A setting your app hasn't written raises NotConfigured the first time it's needed, naming that
 file, so nothing silently passes. The rest have defaults. The environment is read at first use.
 """
+import datetime
 import importlib
 import os
 import threading
@@ -44,6 +45,7 @@ _DESCRIPTIONS = {
     "webhook_url": "the base of each run's and each connection's webhook URL",
     "client": "a qubesync.Client to use instead of the one made from api_key and base_url",
     "production": "True in production, where Connect refuses simulated=1 (404)",
+    "prune_runs_after": "a datetime.timedelta of a day or more: how long ended runs and requests are kept",
 }
 
 # Read from the environment at first use, when configure didn't set them.
@@ -134,6 +136,8 @@ class Settings(object):
             )
         if name == "job_attempts":
             return DEFAULT_JOB_ATTEMPTS
+        if name == "prune_runs_after":
+            return None  # off until set
         if name == "dedupe":
             return self._default_dedupe()
         if name == "authorize_question":
@@ -228,6 +232,11 @@ def _validate(name, value):
         secrets = [value] if isinstance(value, (str, bytes)) else value
         if not isinstance(secrets, (list, tuple)) or not secrets:
             raise TypeError("qubesync.kit: webhook_secret is a string, or a list of them")
+    elif name == "prune_runs_after":
+        if not isinstance(value, datetime.timedelta) or value < datetime.timedelta(days=1):
+            raise TypeError(
+                "qubesync.kit: prune_runs_after is None or a datetime.timedelta of a day or more, in %s" % CONFIG_FILE
+            )
     elif name == "production":
         if not isinstance(value, bool):
             raise TypeError("qubesync.kit: production is True or False, in %s" % CONFIG_FILE)
@@ -287,6 +296,8 @@ def configure(**values):
     production          True where Connect must refuse simulated=1 (404). Default: the
                         adapter's guess (Django: not DEBUG; Flask: not debug or testing;
                         FastAPI: not app.debug); with none, True
+    prune_runs_after    a timedelta of a day or more: qubesync.kit.prune_runs() deletes ended
+                        runs and requests older than that. Default None: kept
     """
     _SETTINGS.update(**values)
     return _SETTINGS

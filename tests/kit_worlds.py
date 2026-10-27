@@ -9,7 +9,7 @@ import uuid
 import pytest
 
 import qubesync.kit as kit
-from kit_support import API_KEY, QUBE_ID, SECRET, WEBHOOK_URL, FakeClient
+from kit_support import API_KEY, QUBE_ID, REQUEST_ID, SECRET, WEBHOOK_URL, FakeClient
 
 # The world the current test runs in, for the operation classes' find_record and handlers.
 CURRENT = []
@@ -62,8 +62,36 @@ class SyncCustomer(kit.Operation):
         SyncCustomer.calls.append(("ended", self.record))
 
 
+class FindCustomer(kit.Request):
+    """A plain request, with no find_record: its record comes from the row's record_type."""
+
+    operation = "customer.query"
+    slug = "find_customer"
+    calls = []
+
+    def params(self):
+        return {"full_name": self.record.name}
+
+    def answered(self, event):
+        FindCustomer.calls.append(("answered", event.page))
+
+    def done(self):
+        FindCustomer.calls.append(("done", self.queued_request.last_page))
+
+    def failed(self, event):
+        FindCustomer.calls.append(("failed", event.state))
+
+    def retrying(self, event):
+        FindCustomer.calls.append(("retrying", event.page))
+
+
 class ConnectionEvents(kit.ConnectionEvents):
     calls = []
+
+    def disconnected(self):
+        # Its runs are still there: the hook runs before they go.
+        runs_left = self.connection._kit_store.exists("run", connection_id=self.connection.id)
+        ConnectionEvents.calls.append(("disconnected", self.connection.id, runs_left))
 
     def connected(self, event):
         ConnectionEvents.calls.append(("connected", self.connection.id, self.owner.id, self.connection.status))
@@ -78,11 +106,11 @@ class ConnectionEvents(kit.ConnectionEvents):
         ConnectionEvents.calls.append(("resumed", self.connection.id, self.owner.id, self.connection.stall_reason))
 
 
-OPERATIONS = {"create_invoice": CreateInvoice, "sync_customer": SyncCustomer}
+OPERATIONS = {"create_invoice": CreateInvoice, "sync_customer": SyncCustomer, "find_customer": FindCustomer}
 
 
 def clear_calls():
-    for cls in (CreateInvoice, SyncCustomer, ConnectionEvents):
+    for cls in (CreateInvoice, SyncCustomer, FindCustomer, ConnectionEvents):
         del cls.calls[:]
 
 
@@ -118,6 +146,20 @@ class World(object):
             **fields
         )
 
+    def request(self, record, connection, state="queued", qube_id=REQUEST_ID, **fields):
+        return self.create(
+            self.QueuedRequest,
+            connection_id=connection.id,
+            operation="find_customer",
+            record=record,
+            reference="find_customer-%s-%s" % (record.id, uuid.uuid4()),
+            state=state,
+            qube_id=qube_id,
+            params={"full_name": record.name},
+            pages_answered=0,
+            **fields
+        )
+
     def ago(self, row, seconds):
         """row as if made seconds ago."""
         moment = self.Run._kit_store.now() - datetime.timedelta(seconds=seconds)
@@ -137,14 +179,23 @@ class DjangoWorld(World):
         from django.contrib.auth.models import User
 
         from kitapp.models import Account, Customer, Invoice
-        from qubesync.django.models import Connection, Notification, QuickbooksRecord, Run
+        from qubesync.django.models import (
+            Connection,
+            Notification,
+            QueuedRequest,
+            QuickbooksRecord,
+            RequestDelivery,
+            Run,
+            SyncMark,
+        )
 
         self.User = User
         self.Account, self.Invoice, self.Customer = Account, Invoice, Customer
         self.Connection, self.Run, self.QuickbooksRecord, self.Notification = Connection, Run, QuickbooksRecord, Notification
+        self.SyncMark, self.QueuedRequest, self.RequestDelivery = SyncMark, QueuedRequest, RequestDelivery
 
     def clean(self):
-        for model in (self.Notification, self.QuickbooksRecord, self.Run, self.Connection, self.Invoice, self.Customer, self.Account, self.User):
+        for model in (self.RequestDelivery, self.QueuedRequest, self.SyncMark, self.Notification, self.QuickbooksRecord, self.Run, self.Connection, self.Invoice, self.Customer, self.Account, self.User):
             model.objects.all().delete()
 
     def account(self, name="Riverbend"):
@@ -213,6 +264,7 @@ class SQLAlchemyWorld(World):
             tables.QuickbooksRecord,
             tables.Notification,
         )
+        self.SyncMark, self.QueuedRequest, self.RequestDelivery = tables.SyncMark, tables.QueuedRequest, tables.RequestDelivery
 
     def settings(self):
         values = World.settings(self)
@@ -380,6 +432,9 @@ class DjangoDriver(Driver):
     def get(self, path, params=None, account=None, headers=None):
         return self._wrap(self._client(account).get(path, params or {}, **self._headers(headers)))
 
+    def delete(self, path, account=None, headers=None):
+        return self._wrap(self._client(account).delete(path, **self._headers(headers)))
+
     def _wrap(self, response):
         return Response(response.status_code, response.content.decode("utf-8"), dict(response.items()))
 
@@ -421,6 +476,10 @@ class FlaskDriver(Driver):
                 qube_flask.question_html(invoice, "create_invoice"),
             )
 
+        @app.route("/connections")
+        def connections_page():
+            return "<main>%s</main>" % qube_flask.error_html()
+
         self.app = app
         self.reset()
 
@@ -447,6 +506,9 @@ class FlaskDriver(Driver):
 
     def get(self, path, params=None, account=None, headers=None):
         return self._wrap(self.client.get(path, query_string=params or {}, headers=self._headers(account, headers)))
+
+    def delete(self, path, account=None, headers=None):
+        return self._wrap(self.client.delete(path, headers=self._headers(account, headers)))
 
     def _wrap(self, response):
         return Response(response.status_code, response.get_data(as_text=True), dict(response.headers))
@@ -483,6 +545,10 @@ class FastAPIDriver(Driver):
             finally:
                 world.Session.remove()
 
+        @app.get("/connections", response_class=HTMLResponse)
+        def connections_page(request: Request):
+            return "<main>%s</main>" % qube_fastapi.error_html(request)
+
         self.app = app
         self.client = TestClient(app)
 
@@ -513,6 +579,10 @@ class FastAPIDriver(Driver):
         if 'document.cookie = "%s=; Max-Age=0' % kit.ERROR_KEY in response.text:
             self.client.cookies.delete(kit.ERROR_KEY)  # what the template's script does in a browser
         return response
+
+    def delete(self, path, account=None, headers=None):
+        response = self.client.delete(path, headers=self._headers(account, headers), follow_redirects=False)
+        return self._wrap(response)
 
     def _wrap(self, response):
         return Response(response.status_code, response.text, dict(response.headers))

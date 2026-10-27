@@ -1,6 +1,6 @@
 """The kit's tables as SQLAlchemy models, for Flask and FastAPI (SQLAlchemy 1.4 or later):
-Connection, Run, QuickbooksRecord and Notification, on their own MetaData (metadata), which
-your Alembic picks up:
+Connection, Run, QuickbooksRecord, Notification, SyncMark, QueuedRequest and RequestDelivery,
+on their own MetaData (metadata), which your Alembic picks up:
 
     # migrations/env.py
     import qubesync.kit.sqlalchemy
@@ -42,6 +42,7 @@ from sqlalchemy import (
     String,
     Text,
     cast,
+    func,
     inspect,
     select,
 )
@@ -50,9 +51,28 @@ from sqlalchemy.orm import declarative_base, relationship, validates
 from sqlalchemy.orm.exc import NoResultFound
 from sqlalchemy.types import TypeDecorator
 
-from ._models import ConnectionMixin, QuickbooksRecordMixin, RunMixin, dump_json, family_for, load_json
+from ._models import (
+    ConnectionMixin,
+    QueuedRequestMixin,
+    QuickbooksRecordMixin,
+    RunMixin,
+    dump_json,
+    family_for,
+    load_json,
+)
 from ._settings import settings
-from ._store import CONNECTION, NOTIFICATION, QUICKBOOKS_RECORD, RUN, UTC, Store, import_path
+from ._store import (
+    CONNECTION,
+    NOTIFICATION,
+    QUEUED_REQUEST,
+    QUICKBOOKS_RECORD,
+    REQUEST_DELIVERY,
+    RUN,
+    SYNC_MARK,
+    UTC,
+    Store,
+    import_path,
+)
 
 __all__ = [
     "metadata",
@@ -61,6 +81,9 @@ __all__ = [
     "Run",
     "QuickbooksRecord",
     "Notification",
+    "SyncMark",
+    "QueuedRequest",
+    "RequestDelivery",
     "JSONText",
     "SQLAlchemyStore",
     "STORE",
@@ -110,8 +133,10 @@ class Connection(ConnectionMixin, Base):
     created_at = Column(DateTime, nullable=False, default=_now)
     updated_at = Column(DateTime, nullable=False, default=_now, onupdate=_now)
 
-    runs = relationship("Run", back_populates="connection")
-    quickbooks_records = relationship("QuickbooksRecord", back_populates="connection")
+    # passive_deletes="all": disconnect deletes these itself, so deleting the row never nulls theirs.
+    runs = relationship("Run", back_populates="connection", passive_deletes="all")
+    quickbooks_records = relationship("QuickbooksRecord", back_populates="connection", passive_deletes="all")
+    queued_requests = relationship("QueuedRequest", back_populates="connection", passive_deletes="all")
 
     def __repr__(self):
         return "<Connection %s qube_id=%r status=%r>" % (self.id, self.qube_id, self.status)
@@ -218,11 +243,86 @@ class QuickbooksRecord(QuickbooksRecordMixin, Base):
         return "<QuickbooksRecord %s %s %s>" % (self.id, self.kind, self.qb_id)
 
 
+class SyncMark(Base):
+    """When a connection's last completed run of a workflow started (Connection.last_synced_at):
+    a sync's next since, kept apart from qube_runs so pruning runs never loses it."""
+
+    __tablename__ = "qube_sync_marks"
+    __table_args__ = (
+        Index("index_qube_sync_marks_on_connection_and_workflow", "connection_id", "workflow", unique=True),
+    )
+
+    id = Column(_ID, primary_key=True)
+    connection_id = Column(BigInteger, ForeignKey("qube_connections.id", ondelete="CASCADE"), nullable=False)
+    workflow = Column(String(100), nullable=False)
+    started_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=_now)
+    updated_at = Column(DateTime, nullable=False, default=_now, onupdate=_now)
+
+
+class QueuedRequest(QueuedRequestMixin, Base):
+    __tablename__ = "qube_requests"
+    __table_args__ = (
+        Index("index_qube_requests_on_reference", "reference", unique=True),
+        Index(
+            "index_qube_requests_on_connection_and_record",
+            "connection_id",
+            "record_type",
+            "record_id",
+            "operation",
+            "created_at",
+        ),
+    )
+
+    id = Column(_ID, primary_key=True)
+    connection_id = Column(BigInteger, ForeignKey("qube_connections.id"), nullable=False)
+    operation = Column(String(100), nullable=False)
+    record_type = Column(String(100), nullable=False)
+    record_id = Column(String(255), nullable=False)
+    reference = Column(String(255), nullable=False)
+    qube_id = Column(String(255))
+    state = Column(String(50), nullable=False, default="queued")
+    params = Column(JSONText)
+    error = Column(JSONText)
+    pages_answered = Column(Integer, nullable=False, default=0)
+    last_page = Column(Integer)
+    ended_at = Column(DateTime)
+    created_at = Column(DateTime, nullable=False, default=_now)
+    updated_at = Column(DateTime, nullable=False, default=_now, onupdate=_now)
+
+    connection = relationship("Connection", back_populates="queued_requests")
+    # Deleting a request deletes its deliveries (ON DELETE CASCADE too, where foreign keys are on).
+    deliveries = relationship("RequestDelivery", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return "<QueuedRequest %s %s %r state=%r>" % (self.id, self.operation, self.reference, self.state)
+
+
+class RequestDelivery(Base):
+    """A request webhook its handler has taken, by page_request_id:state, written in the
+    handler's transaction. Deleted with its request."""
+
+    __tablename__ = "qube_request_deliveries"
+    __table_args__ = (
+        Index("index_qube_request_deliveries_on_request_and_key", "request_id", "dedupe_key", unique=True),
+    )
+
+    id = Column(_ID, primary_key=True)
+    request_id = Column(BigInteger, ForeignKey("qube_requests.id", ondelete="CASCADE"), nullable=False)
+    dedupe_key = Column(String(200), nullable=False)
+    page = Column(Integer)
+    state = Column(String(50), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=_now)
+
+
 _MODELS = {
     CONNECTION: Connection,
     RUN: Run,
     QUICKBOOKS_RECORD: QuickbooksRecord,
     NOTIFICATION: Notification,
+    SYNC_MARK: SyncMark,
+    QUEUED_REQUEST: QueuedRequest,
+    REQUEST_DELIVERY: RequestDelivery,
 }
 
 # How deep the kit's own transactions are, kept on the session (Session.info).
@@ -270,9 +370,33 @@ class SQLAlchemyStore(Store):
         cls = self.model(model_name)
         query = self.session().query(cls)
         for column, value in filters.items():
-            attribute = getattr(cls, column)
-            query = query.filter(attribute.in_(value) if isinstance(value, (list, tuple)) else attribute == value)
+            negated = column.endswith("__not")
+            attribute = getattr(cls, column[: -len("__not")] if negated else column)
+            condition = attribute.in_(value) if isinstance(value, (list, tuple)) else attribute == value
+            query = query.filter(~condition if negated else condition)
         return query
+
+    def prunable(self, model_name, cutoff, states=None):
+        # type: (str, datetime.datetime, Optional[Tuple[str, ...]]) -> Any
+        cls = self.model(model_name)
+        query = self.session().query(cls)
+        if states is None:
+            return query.filter(cls.ended_at < cutoff)
+        return query.filter(func.coalesce(cls.ended_at, cls.updated_at) < cutoff, cls.state.in_(list(states)))
+
+    def ids(self, query, limit):
+        # type: (Any, int) -> List[Any]
+        cls = query.column_descriptions[0]["entity"]
+        return [row[0] for row in query.with_entities(cls.id).order_by(cls.id).limit(limit)]
+
+    def delete_all(self, model_name, **filters):
+        # type: (str, **Any) -> int
+        # "fetch": the deleted rows leave the session too, so none is read back stale.
+        session = self.session()
+        count = self.query(model_name, **filters).delete(synchronize_session="fetch")
+        if not session.info.get(_DEPTH, 0):
+            session.commit()
+        return count
 
     def with_link(self, query, connection_id, linked):
         # type: (Any, Any, bool) -> Any
@@ -418,5 +542,5 @@ def _typed_key(cls, id):
 
 
 STORE = SQLAlchemyStore()
-for _model in (Connection, Run, QuickbooksRecord):
+for _model in (Connection, Run, QuickbooksRecord, QueuedRequest):
     _model._kit_store = STORE

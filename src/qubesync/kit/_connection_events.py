@@ -105,6 +105,11 @@ class ConnectionEvents(object):
         """Clear what stalled showed, whichever its reason."""
         self.log_event(event)
 
+    def disconnected(self):
+        # type: () -> None
+        """The account disconnected it (the disconnect route): delete your rows that point at
+        it. Runs in the transaction that deletes it, before its runs and links go."""
+
     def log_event(self, event):
         # type: (Any) -> None
         """All a handler does until you fill it in."""

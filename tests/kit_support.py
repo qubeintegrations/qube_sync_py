@@ -22,6 +22,8 @@ ONBOARDING = "https://qubesync.com/onboard/abc"
 VECTORS = json.loads((Path(__file__).parent / "fixtures" / "test_vectors.json").read_text())
 # The vectors' connection id: a connection made with it receives the vectors' events.
 QUBE_ID = "0196a1c0-0000-7000-8000-00000000c001"
+# The vectors' plain request id.
+REQUEST_ID = "0196a1c0-0000-7000-8000-00000000e001"
 DELIVERY_ID = "0196a1c0-0000-7000-8000-00000000d001"
 
 DECISIONS = "https://qubesync.com/api/v2/connections/c/workflow-runs/r/decisions?prompt_token=tok"
@@ -124,6 +126,15 @@ class FakeClient(object):
     def redeliver_run(self, connection_id, run_id):
         sent = self._call("redeliver_run", connection_id, run_id)
         return sent or {"run_id": run_id, "event": "workflow_run.completed", "revision": 3, "webhook_url": "x"}
+
+    def delete_connection(self, id):
+        return self._call("delete_connection", id) or {"id": id}
+
+    def queue(self, operation_id, connection_id, params=None, *, webhook_url, idempotency_key=None):
+        queued = self._call(
+            "queue", operation_id, connection_id, params, webhook_url=webhook_url, idempotency_key=idempotency_key
+        )
+        return queued or {"id": "req-q-1", "state": "queued"}
 
     def update_connection(self, id, *, webhook_url=None, name=None):
         return self._call("update_connection", id, webhook_url=webhook_url) or {"id": id}

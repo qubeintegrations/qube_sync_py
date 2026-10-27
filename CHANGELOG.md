@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Kit: disconnect. `DELETE quickbooks/connections/<id>`, and `POST .../<id>/disconnect` for an HTML
+  form (`qubesync.kit.disconnect`; Django `qubesync:connection` and `qubesync:connection_disconnect`,
+  Flask `qubesync_connections.connection` and `.connection_disconnect`, FastAPI
+  `qubesync_connection` and `qubesync_connection_disconnect`): QuBe Sync deletes its connection (a
+  404 counts as gone), then `connection.disconnect()` deletes the row with its runs, requests,
+  QuickBooks links and sync marks, after `ConnectionEvents.disconnected()`, where the app deletes
+  its own rows that point at it. Refused while a run or request hasn't ended (`RUNS_GOING`), or
+  when QuBe Sync doesn't answer (`DISCONNECT_NO_ANSWER`). `{% qube_error %}` (Django) and the
+  `qube_error` Jinja global (Flask, FastAPI: `error_html`) show a route's message on a page without
+  the run status or question.
+- Kit: sync marks (`qube_sync_marks`): each completed run moves its connection's mark for its
+  workflow to when the run started, never back; `connection.last_synced_at(workflow)` and
+  `Operation.last_synced_at()` read it (aware UTC), a sync's next `since` that outlives pruned runs.
+- Kit: opt-in pruning. The `prune_runs_after` setting (a `timedelta` of a day or more) and
+  `qubesync.kit.prune_runs()`, which deletes ended runs (`Run.prunable(older_than)`) and ended
+  plain requests (`QueuedRequest.prunable(older_than)`) with their notifications and deliveries,
+  never within a day of their end. Links and sync marks stay.
+- Kit: plain v2 requests. `qubesync.kit.Request` (`operation`, `slug`, `params()`, and the handlers
+  `answered`, `done`, `failed`, `retrying`, `timed_out`), `Request.queue(record, connection)`
+  returning a `QueuedRequest` (one at a time per record, slug and connection; its reference is the
+  `Idempotency-Key`; `retry_queue()`), and their webhook route `POST webhooks/qube/requests/<id>`
+  (Django `qubesync:request_webhook`, Flask `qubesync_webhooks.request_webhook`, FastAPI
+  `qubesync_request_webhook`). Deliveries are taken once by `page_request_id:state`, and `done`
+  fires once every page is in. New tables `qube_sync_marks`, `qube_requests` and
+  `qube_request_deliveries`: Django's migration `0003_sync_marks_and_requests`; with SQLAlchemy,
+  autogenerate an Alembic revision.
+- Kit: an answer QuBe Sync took puts the run back to `running` at once
+  (`Operation.answered(token, taken=True)`), so its sync status reads `sending` rather than
+  `needs_answer` until the Web Connector's next poll.
 - `qube_sync_status`: a Django tag (`{% qube_sync_status invoice "create_invoice" as sync %}`) and a
   Flask and FastAPI Jinja global, so a page shows its start button only while it makes sense.
 - `redirect_back` in `qubesync.django`, `qubesync.flask` and `qubesync.fastapi`, and

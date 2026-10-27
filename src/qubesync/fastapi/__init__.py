@@ -23,8 +23,11 @@ The routes, relative to where they're included (each named, for request.url_for)
 
     POST /quickbooks/connections                   qubesync_connections
     POST /quickbooks/connections/{id}/onboarding   qubesync_connection_onboarding
+    DELETE /quickbooks/connections/{id}            qubesync_connection (disconnect)
+    POST /quickbooks/connections/{id}/disconnect   qubesync_connection_disconnect (a form's)
     POST /webhooks/qube/runs/{id}                  qubesync_run_webhook (no sign-in)
     POST /webhooks/qube/connections/{id}           qubesync_connection_webhook (no sign-in)
+    POST /webhooks/qube/requests/{id}              qubesync_request_webhook (no sign-in)
     POST /qube/questions/runs/{id}                 qubesync_question (reads a form: python-multipart)
     GET  /qube/questions/runs/{id}/search          qubesync_question_search
     POST /qube/runs/{id}/retry_start               qubesync_retry_start
@@ -66,6 +69,7 @@ __all__ = [
     "run_status_context",
     "question_html",
     "run_status_html",
+    "error_html",
     "add_templates",
     "take_error",
     "TEMPLATES",
@@ -219,6 +223,13 @@ def routers():
         reply = await run_in_threadpool(_unit, kit.receive, "connection", id, body, signature, None, request.url.path)
         return _response(reply)
 
+    @webhooks.post("/webhooks/qube/requests/{id}", name="qubesync_request_webhook")
+    async def request_webhook(id: str, request: Request) -> Response:
+        body = await _raw_body(request)
+        signature = request.headers.get(kit.SIGNATURE_HEADER)
+        reply = await run_in_threadpool(_unit, kit.receive, "request", id, body, signature, None, request.url.path)
+        return _response(reply)
+
     connections = APIRouter()
 
     @connections.post("/quickbooks/connections", name="qubesync_connections")
@@ -231,6 +242,15 @@ def routers():
     @connections.post("/quickbooks/connections/{id}/onboarding", name="qubesync_connection_onboarding")
     def onboarding(id: str, request: Request) -> Response:
         return _response(_unit(kit.onboarding, request, id))
+
+    @connections.delete("/quickbooks/connections/{id}", name="qubesync_connection")
+    def disconnect(id: str, request: Request) -> Response:
+        return _response(_unit(kit.disconnect, request, id, request.headers.get("referer"), _host(request)), request)
+
+    # The same, for an HTML form, which can't send DELETE.
+    @connections.post("/quickbooks/connections/{id}/disconnect", name="qubesync_connection_disconnect")
+    def disconnect_form(id: str, request: Request) -> Response:
+        return _response(_unit(kit.disconnect, request, id, request.headers.get("referer"), _host(request)), request)
 
     questions = APIRouter()
 
@@ -307,8 +327,8 @@ def add_templates(templates):
     # type: (Any) -> Any
     """Lets a Jinja2Templates (or a jinja2 Environment) find qubesync/question.html and
     qubesync/run_status.html, after its own directories, so yours come first, and registers
-    qube_question(request, record, operation), qube_run_status(request, record, operation) and
-    qube_sync_status(record, operation) as its globals."""
+    qube_question(request, record, operation), qube_run_status(request, record, operation),
+    qube_sync_status(record, operation) and qube_error(request) as its globals."""
     from jinja2 import ChoiceLoader, FileSystemLoader
 
     env = getattr(templates, "env", templates)
@@ -322,6 +342,7 @@ def add_templates(templates):
             request, record, operation, connection=connection, templates=env, **context
         ),
         qube_sync_status=sync_status,
+        qube_error=lambda request, **context: error_html(request, templates=env, **context),
     )
     return templates
 
@@ -357,3 +378,11 @@ def run_status_html(request, record, operation, connection=None, templates=None,
     """qubesync/run_status.html rendered for record. context adds to it (csrf_token)."""
     values = dict(run_status_context(request, record, operation, connection), request=request, **context)
     return _render(templates, "qubesync/run_status.html", values)
+
+
+def error_html(request, templates=None, **context):
+    # type: (Request, Any, **Any) -> Markup
+    """qubesync/_error.html with the message a route left (a disconnect refused, say), once:
+    for a page without the run status or question."""
+    values = dict(take_error(request), request=request, **context)
+    return _render(templates, "qubesync/_error.html", values)

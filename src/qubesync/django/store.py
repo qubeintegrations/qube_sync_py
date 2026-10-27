@@ -6,11 +6,21 @@ from typing import Any, Iterator, List, Optional, Tuple
 from django.apps import apps
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db import IntegrityError, close_old_connections, router, transaction
-from django.db.models import CharField, Exists, OuterRef
+from django.db.models import CharField, Exists, OuterRef, Q
 from django.db.models.functions import Cast
 from django.utils import timezone
 
-from ..kit._store import CONNECTION, NOTIFICATION, QUICKBOOKS_RECORD, RUN, Store, utc
+from ..kit._store import (
+    CONNECTION,
+    NOTIFICATION,
+    QUEUED_REQUEST,
+    QUICKBOOKS_RECORD,
+    REQUEST_DELIVERY,
+    RUN,
+    SYNC_MARK,
+    Store,
+    utc,
+)
 
 __all__ = ["DjangoStore", "STORE"]
 
@@ -19,6 +29,9 @@ _MODEL_NAMES = {
     RUN: "Run",
     QUICKBOOKS_RECORD: "QuickbooksRecord",
     NOTIFICATION: "Notification",
+    SYNC_MARK: "SyncMark",
+    QUEUED_REQUEST: "QueuedRequest",
+    REQUEST_DELIVERY: "RequestDelivery",
 }
 
 
@@ -39,7 +52,7 @@ class DjangoStore(Store):
 
     def filter(self, model_name, order=None, limit=None, lock=False, **filters):
         # type: (str, Optional[List[str]], Optional[int], bool, **Any) -> List[Any]
-        rows = self.model(model_name)._base_manager.filter(**_lookups(filters))
+        rows = _filtered(self.model(model_name)._base_manager.all(), filters)
         if order:
             rows = rows.order_by(*order)
         if lock:
@@ -50,7 +63,26 @@ class DjangoStore(Store):
 
     def query(self, model_name, **filters):
         # type: (str, **Any) -> Any
-        return self.model(model_name).objects.filter(**_lookups(filters))
+        return _filtered(self.model(model_name).objects.all(), filters)
+
+    def prunable(self, model_name, cutoff, states=None):
+        # type: (str, datetime.datetime, Optional[Tuple[str, ...]]) -> Any
+        # COALESCE(ended_at, updated_at) < cutoff, as two conditions.
+        rows = self.model(model_name)._base_manager.all()
+        if states is None:
+            return rows.filter(ended_at__lt=cutoff)
+        old = Q(ended_at__lt=cutoff) | Q(ended_at__isnull=True, updated_at__lt=cutoff)
+        return rows.filter(old, state__in=list(states))
+
+    def ids(self, query, limit):
+        # type: (Any, int) -> List[Any]
+        return list(query.order_by("pk").values_list("pk", flat=True)[:limit])
+
+    def delete_all(self, model_name, **filters):
+        # type: (str, **Any) -> int
+        rows = _filtered(self.model(model_name)._base_manager.all(), filters)
+        with transaction.atomic(using=self._db()):
+            return rows.delete()[0]
 
     def with_link(self, query, connection_id, linked):
         # type: (Any, Any, bool) -> Any
@@ -166,12 +198,21 @@ def _queryset(query):
     return query._default_manager.all() if isinstance(query, type) else query
 
 
-def _lookups(filters):
-    # type: (dict) -> dict
-    # A list or tuple is "in"; None is "is null", as Django's exact lookup already takes it.
-    return {
-        ("%s__in" % column if isinstance(value, (list, tuple)) else column): value for column, value in filters.items()
-    }
+def _filtered(rows, filters):
+    # type: (Any, dict) -> Any
+    # A list or tuple is "in"; None is "is null", as Django's exact lookup already takes it;
+    # column__not is excluded, one condition at a time.
+    for column, value in filters.items():
+        if column.endswith("__not"):
+            rows = rows.exclude(**_lookup(column[: -len("__not")], value))
+        else:
+            rows = rows.filter(**_lookup(column, value))
+    return rows
+
+
+def _lookup(column, value):
+    # type: (str, Any) -> dict
+    return {("%s__in" % column if isinstance(value, (list, tuple)) else column): value}
 
 
 STORE = DjangoStore()
