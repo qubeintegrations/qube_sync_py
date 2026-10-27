@@ -13,6 +13,7 @@ from urllib.parse import quote
 
 from ._defaults import client
 from ._errors import UnknownOperation
+from ._messages import t
 from ._settings import settings
 from ._store import (
     CONNECTION,
@@ -530,34 +531,50 @@ class RunMixin(object):
     @property
     def summary_text(self):
         # type: () -> str
-        """Where it stands, in one plain sentence for a person: "Added to QuickBooks", "Done",
-        "Failed: <message>", "Cancelled: <reason>", "Waiting for your answer", "Starting",
-        "Not confirmed by QuBe Sync yet" or "Running"."""
+        """Where it stands, in a few words for a person: "Added to QuickBooks", "Done",
+        "Couldn't sync", "Cancelled", "Needs your answer", "Sending to QuickBooks", "Still
+        waiting for QuickBooks" (a start unconfirmed for a minute) or "Syncing with QuickBooks".
+        Why it failed or was cancelled is reason_text. The words are the messages setting's."""
         if self.cancelled():
-            return "Cancelled: %s" % self.cancel_reason_text
+            return t("status.cancelled")
         state = self.state
         if state == "starting":
-            return "Not confirmed by QuBe Sync yet" if self.unconfirmed() else "Starting"
+            return t("status.unconfirmed" if self.unconfirmed() else "status.starting")
         if state == "completed":
             outcome = self.outcome or ""
             if outcome == "added":
-                return "Added to QuickBooks"
+                return t("status.added")
             if outcome in ("", "completed"):
-                return "Done"
-            return "Done: %s" % _humanize(outcome)
+                return t("status.done")
+            return t("status.done_with", outcome=_humanize(outcome))
         if state == "failed":
-            message = self.error_message
-            return "Failed: %s" % message if message else "Failed"
+            return t("status.failed")
         if state == "awaiting_input":
-            return "Waiting for your answer"
-        return "Running"
+            return t("status.needs_answer")
+        return t("status.running")
+
+    @property
+    def reason_text(self):
+        # type: () -> Optional[str]
+        """Why it failed (its error's message) or was cancelled (the reason it carried), as a
+        sentence, or None."""
+        if self.cancelled():
+            text = (self.cancel_reason or "").strip()
+        elif self.state == "failed":
+            text = (self.error_message or "").strip()
+        else:
+            return None
+        if not text:
+            return None
+        text = text[:1].upper() + text[1:]
+        return text if text[-1] in ".!?" else text + "."
 
     @property
     def cancel_reason_text(self):
         # type: () -> str
         """Why it was cancelled: the reason it carried, else what a cancelled outcome means."""
         reason = (self.cancel_reason or "").strip()
-        return reason or "your app chose to stop"
+        return reason or t("status.cancel_reason")
 
     @property
     def error_message(self):
@@ -574,7 +591,7 @@ class RunMixin(object):
         if text:
             return text
         if self.outcome is None and self.ended_at is None:
-            return "it couldn't be started"
+            return t("status.not_started")
         if not self.outcome or self.outcome == "failed":
             return None
         return _humanize(self.outcome)

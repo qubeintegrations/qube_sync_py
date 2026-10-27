@@ -1,0 +1,6 @@
+{# A fixed list (field.options, each value and label), with a blank first. #}{% load qubesync %}
+{% qube_capture as control %}<select id="{{ field.dom_id }}" name="{{ field.input_name }}" class="{% if field.cell %}{% qube_classes "select" "qube-select" "qube-rows-input" %}{% else %}{% qube_classes "select" "qube-select" %}{% endif %}"{% if field.required %} required{% endif %}{% if field.disabled %} disabled{% endif %}{% if not field.labelled %} aria-label="{{ field.label }}"{% endif %}{% if field.cell %} data-qube-rows-input{% endif %}>
+  <option value=""></option>
+  {% for option in field.options %}<option value="{{ option.value }}">{{ option.label }}</option>{% endfor %}
+</select>{% endqube_capture %}
+{% include "qubesync/question/field.html" %}

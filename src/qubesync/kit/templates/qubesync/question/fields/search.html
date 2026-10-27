@@ -1,0 +1,12 @@
+{#- A record field: what the user types is looked up at field.search_url (GET ?field=&q=&row=,
+    answering [{value, label, detail}]), and the match they pick fills the hidden input posted as
+    field.input_name. The behaviour script keys on the data-qube-* attributes; the box's
+    data-qube-text-* attributes are its words (the messages setting's question.*). -#}
+{% autoescape true %}
+{% set control %}<div class="{{ qube_classes('search', 'qube-search') }}" data-qube-search="{{ field.search_url }}" data-qube-field="{{ field.search_field }}"{% if field.row_key is not none %} data-qube-row="{{ field.row_key }}"{% endif %} data-qube-result-class="{{ qube_classes('search_result', 'qube-search-result') }}" data-qube-text-no-matches="{{ qube_t('question.no_matches') }}" data-qube-text-searching="{{ qube_t('question.searching') }}" data-qube-text-search-failed="{{ qube_t('question.search_failed') }}" data-qube-text-pick-a-match="{{ qube_t('question.pick_a_match') }}">
+  <input type="search" id="{{ field.dom_id }}" class="{{ qube_classes('input', 'qube-search-input') }}" maxlength="100" autocomplete="off"{% if field.required %} required{% endif %}{% if field.disabled %} disabled{% endif %} role="combobox" aria-autocomplete="list" aria-expanded="false"{% if not field.labelled %} aria-label="{{ field.label }}"{% endif %} data-qube-search-input>
+  <input type="hidden" name="{{ field.input_name }}"{% if field.disabled %} disabled{% endif %} class="qube-search-value{% if field.cell %} qube-rows-input{% endif %}"{% if field.cell %} data-qube-rows-input{% endif %} data-qube-search-value>
+  <div class="{{ qube_classes('search_results', 'qube-search-results') }}" data-qube-search-results aria-live="polite"></div>
+</div>{% endset %}
+{% include "qubesync/question/field.html" %}
+{% endautoescape %}

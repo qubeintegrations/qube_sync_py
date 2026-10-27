@@ -386,13 +386,15 @@ class TestRun:
 
         assert run.failed()
         assert run.error == error
-        assert run.summary_text == "Failed: No customer named Riverbend"
+        assert run.summary_text == "Couldn't sync"
+        assert run.reason_text == "No customer named Riverbend."
         assert run.error_detail == "Add the customer, then start again."
 
     def test_takes_an_error_thats_a_sentence(self, world, run):
         run = deliver(world, "run", run, run_body("workflow_run.failed", run, {"revision": 2}))
 
-        assert run.summary_text.startswith("Failed: Five renames were tried")
+        assert run.summary_text == "Couldn't sync"
+        assert run.reason_text.startswith("Five renames were tried")
         assert run.error_detail is None
 
     def test_keeps_a_cancelled_runs_reason(self, world, run):
@@ -400,7 +402,8 @@ class TestRun:
 
         assert run.cancelled()
         assert run.cancel_reason == "The customer was merged in our CRM."
-        assert run.summary_text == "Cancelled: The customer was merged in our CRM."
+        assert run.summary_text == "Cancelled"
+        assert run.reason_text == "The customer was merged in our CRM."
 
     def test_keeps_an_ending_when_the_handler_writes_nothing(self, world, run, monkeypatch):
         monkeypatch.setattr(CreateInvoice, "failed", lambda operation, event: None)
@@ -409,28 +412,31 @@ class TestRun:
         assert (run.state, run.outcome) == ("failed", "renames_exhausted")
 
     def test_says_where_it_stands_in_a_sentence(self, world, run):
-        assert run.summary_text == "Running"
-        assert world.update(run, state="awaiting_input").summary_text == "Waiting for your answer"
+        assert run.summary_text == "Syncing with QuickBooks"
+        assert run.reason_text is None
+        assert world.update(run, state="awaiting_input").summary_text == "Needs your answer"
         assert world.update(run, state="completed", outcome="completed").summary_text == "Done"
         assert world.update(run, state="completed", outcome="used_existing").summary_text == "Done: Used existing"
         failed = world.update(run, state="failed", outcome=None, ended_at=None, error=None)
-        assert failed.summary_text == "Failed: it couldn't be started"
-        assert world.update(run, state="cancelled", cancel_reason=None).summary_text == "Cancelled: your app chose to stop"
+        assert (failed.summary_text, failed.reason_text) == ("Couldn't sync", "It couldn't be sent.")
+        cancelled = world.update(run, state="cancelled", cancel_reason=None)
+        assert (cancelled.summary_text, cancelled.reason_text) == ("Cancelled", None)
+        assert cancelled.cancel_reason_text == "it was stopped before it finished"
 
     def test_a_completed_run_whose_outcome_is_cancelled_is_cancelled(self, world, run):
         run = world.update(run, state="completed", outcome="cancelled")
 
         assert run.cancelled() and run.ended() and not run.failed()
-        assert run.summary_text == "Cancelled: your app chose to stop"
-        assert world.update(run, cancel_reason="Merged in the CRM").summary_text == "Cancelled: Merged in the CRM"
+        assert run.summary_text == "Cancelled"
+        assert world.update(run, cancel_reason="merged in the CRM").reason_text == "Merged in the CRM."
 
     def test_an_unconfirmed_start_is_one_a_minute_old(self, world, invoice, connection):
         fresh = world.run(invoice, connection, state="starting")
-        assert fresh.summary_text == "Starting"
+        assert fresh.summary_text == "Sending to QuickBooks"
         assert not fresh.unconfirmed()
 
         old = world.ago(world.run(invoice, connection, state="starting"), 120)
-        assert old.summary_text == "Not confirmed by QuBe Sync yet"
+        assert old.summary_text == "Still waiting for QuickBooks"
         assert old.unconfirmed()
 
     def test_latest_for_is_the_records_newest_run_of_that_operation(self, world, invoice, connection):
@@ -1203,7 +1209,7 @@ class TestSyncStatus:
 
         status = self.status(connection, invoice)
 
-        assert (status.status, status.unconfirmed, status.summary_text) == ("sending", True, "Not confirmed by QuBe Sync yet")
+        assert (status.status, status.unconfirmed, status.summary_text) == ("sending", True, "Still waiting for QuickBooks")
 
     def test_failed_with_its_error_and_retry_when_not_linked(self, world, connection, invoice):
         error = {"message": "No customer named Riverbend"}
@@ -1212,7 +1218,8 @@ class TestSyncStatus:
         status = self.status(connection, invoice)
 
         assert (status.status, status.error, status.retry) == ("failed", error, True)
-        assert status.summary_text == "Failed: No customer named Riverbend"
+        assert status.summary_text == "Couldn't sync"
+        assert status.run.reason_text == "No customer named Riverbend."
 
     def test_a_failure_after_the_link_wins_without_a_retry(self, world, connection, invoice):
         linked(world, connection, invoice, seconds_ago=3600)

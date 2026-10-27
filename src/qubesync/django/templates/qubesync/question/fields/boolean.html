@@ -1,0 +1,3 @@
+{# A checkbox: ticked posts "true", sent as true; unticked, false. #}{% load qubesync %}
+{% qube_capture as control %}<input type="checkbox" id="{{ field.dom_id }}" name="{{ field.input_name }}" value="true" class="{% if field.cell %}{% qube_classes "checkbox" "qube-checkbox" "qube-rows-input" %}{% else %}{% qube_classes "checkbox" "qube-checkbox" %}{% endif %}"{% if field.disabled %} disabled{% endif %}{% if not field.labelled %} aria-label="{{ field.label }}"{% endif %}{% if field.cell %} data-qube-rows-input{% endif %}>{% endqube_capture %}
+{% include "qubesync/question/field.html" %}

@@ -28,6 +28,7 @@ from kit_support import (  # noqa: F401
     vector_body,
     vector_prompt,
 )
+from html_tree import parse
 from kit_worlds import ConnectionEvents, CreateInvoice, SyncCustomer, make_driver
 
 
@@ -75,7 +76,7 @@ def page(http, invoice, account):
 
 def shown_errors(http, invoice, account):
     """The messages the invoice page shows (the error a route left goes once)."""
-    return [html.unescape(text) for text in re.findall(r'<p class="qube-error">([^<]*)</p>', page(http, invoice, account))]
+    return [html.unescape(text) for text in re.findall(r'<p class="qube-error" role="alert">([^<]*)</p>', page(http, invoice, account))]
 
 
 # -- Onboarding ------------------------------------------------------------------------------
@@ -257,7 +258,7 @@ class TestDisconnect:
     def errors(self, http, account):
         response = http.get("/connections", account=account)
         assert response.status == 200
-        return [html.unescape(text) for text in re.findall(r'<p class="qube-error">([^<]*)</p>', response.text)]
+        return [html.unescape(text) for text in re.findall(r'<p class="qube-error" role="alert">([^<]*)</p>', response.text)]
 
     @pytest.mark.parametrize("form", [False, True])
     def test_deletes_quickbooks_syncs_connection_then_the_row_and_goes_back(self, http, world, account, connection, client, form):
@@ -296,7 +297,7 @@ class TestDisconnect:
         assert response.status == 303
         assert client.called("delete_connection") == []
         assert world.count(world.Connection, id=connection.id) == 1
-        assert self.errors(http, account) == [kit.RUNS_GOING]
+        assert self.errors(http, account) == [kit.t(kit.RUNS_GOING)]
         assert self.errors(http, account) == []  # once
 
     def test_keeps_the_row_and_says_so_when_quickbooks_sync_doesnt_answer(self, http, world, account, connection, client):
@@ -304,7 +305,7 @@ class TestDisconnect:
 
         assert self.disconnect(http, connection, account).status == 303
         assert world.count(world.Connection, id=connection.id) == 1
-        assert self.errors(http, account) == ["QuBe Sync didn't answer: try disconnecting again in a minute."]
+        assert self.errors(http, account) == ["Couldn't reach QuickBooks' sync service just now. Try disconnecting again in a minute."]
 
     def test_raises_for_anything_else_quickbooks_sync_answers(self, http, world, account, connection, client):
         client.raises["delete_connection"] = api_error(500, "boom")
@@ -604,7 +605,7 @@ class TestAnswer:
 
         assert (response.status, response.location) == (303, "/invoices/%s" % invoice.id)
         assert client.called("answer") == []
-        assert shown_errors(http, invoice, account) == ["This question changed since the page showed it, so that answer was not sent: the page now shows where it stands."]
+        assert shown_errors(http, invoice, account) == ["This question changed after the page loaded, so your answer wasn't sent. The page now shows the latest."]
         assert shown_errors(http, invoice, account) == []  # once
 
     @pytest.mark.parametrize("status,code", [(409, "prompt_changed"), (400, "not_awaiting_input"), (400, "bad_request")])
@@ -615,7 +616,7 @@ class TestAnswer:
 
         assert response.status == 303
         assert world.reload(run).question is None
-        assert shown_errors(http, invoice, account) == ["This question changed since the page showed it, so that answer was not sent: the page now shows where it stands."]
+        assert shown_errors(http, invoice, account) == ["This question changed after the page loaded, so your answer wasn't sent. The page now shows the latest."]
 
     def test_keeps_the_question_and_goes_back_saying_why_for_a_422(self, http, world, account, invoice, run, client):
         client.raises["answer"] = api_error(422, {"detail": "count must be a whole number"})
@@ -624,7 +625,7 @@ class TestAnswer:
 
         assert response.status == 303
         assert world.reload(run).question == QUESTION
-        assert shown_errors(http, invoice, account) == ["QuBe Sync couldn't take that answer: count must be a whole number"]
+        assert shown_errors(http, invoice, account) == ["That answer couldn't be used: count must be a whole number"]
 
     def test_raises_for_anything_else_quickbooks_answers(self, http, account, invoice, run, client):
         client.raises["answer"] = api_error(500, "boom")
@@ -701,7 +702,7 @@ class TestAnswer:
         run = world.update(run, question=None, links=None)
 
         assert self.answer(http, run, {"choice": "use:1"}, account, invoice).status == 303
-        assert shown_errors(http, invoice, account) == ["This question changed since the page showed it, so that answer was not sent: the page now shows where it stands."]
+        assert shown_errors(http, invoice, account) == ["This question changed after the page loaded, so your answer wasn't sent. The page now shows the latest."]
 
     def test_answers_404_for_a_run_that_isnt_there_or_whose_operation_isnt_configured(self, http, account, invoice, run):
         assert http.post("/qube/questions/runs/0", {"choice": "x"}, account=account).status == 404
@@ -820,7 +821,7 @@ class TestRetryStart:
 
         assert self.retry(http, run, account, invoice).status == 303
         assert client.called("start_run") == []
-        assert shown_errors(http, invoice, account) == ["This run isn't waiting for its start to be confirmed."]
+        assert shown_errors(http, invoice, account) == ["This was already sent, so there's nothing to try again."]
 
     def test_answers_404_for_another_accounts_run_logged_and_sends_nothing(self, http, world, invoice, run, client, caplog):
         response = self.retry(http, run, world.account("Someone else"), invoice)
@@ -874,7 +875,7 @@ class TestRedeliver:
 
     @pytest.mark.parametrize(
         "status,message",
-        [(409, "QuBe Sync has no news about this run to send yet."), (429, "That was asked a moment ago: give it a minute.")],
+        [(409, "There's no update yet. Check again in a few minutes."), (429, "That was checked a moment ago. Try again in a minute.")],
     )
     def test_goes_back_saying_why_when_quickbooks_refuses(self, http, account, invoice, run, client, status, message):
         client.raises["redeliver_run"] = api_error(status, {"code": "nothing_to_redeliver"})
@@ -886,7 +887,7 @@ class TestRedeliver:
         client.raises["redeliver_run"] = timeout()
 
         assert self.redeliver(http, run, account, invoice).status == 303
-        assert shown_errors(http, invoice, account) == ["QuBe Sync didn't answer: try again in a minute."]
+        assert shown_errors(http, invoice, account) == ["Couldn't reach QuickBooks' sync service just now. Try again in a minute."]
 
     def test_raises_for_anything_else_quickbooks_answers(self, http, account, invoice, run, client):
         client.raises["redeliver_run"] = api_error(500)
@@ -899,7 +900,7 @@ class TestRedeliver:
 
         assert self.redeliver(http, run, account, invoice).status == 303
         assert client.called("redeliver_run") == []
-        assert shown_errors(http, invoice, account) == ["QuBe Sync has been heard from about this run lately: nothing to ask for."]
+        assert shown_errors(http, invoice, account) == ["This was updated recently. Check again in a few minutes."]
 
     def test_answers_404_for_another_accounts_run_and_asks_nothing(self, http, world, invoice, run, client, caplog):
         response = self.redeliver(http, run, world.account("Someone else"), invoice)
@@ -996,7 +997,8 @@ class TestRunStatusTemplate:
 
         assert 'class="qube-run-status qube-sync-failed qube-run-failed"' in shown
         assert 'data-qube-sync-status="failed"' in shown
-        assert '<p class="qube-run-summary">Failed: No customer &lt;b&gt;named&lt;/b&gt; Riverbend</p>' in shown
+        assert '<p class="qube-run-summary">Couldn&#39;t sync</p>' in shown.replace("&#x27;", "&#39;")
+        assert '<p class="qube-run-reason">No customer &lt;b&gt;named&lt;/b&gt; Riverbend.</p>' in shown
         assert '<p class="qube-run-error-detail">Add the customer first.</p>' in shown
 
     def test_shows_a_completed_run_without_a_detail(self, http, world, account, invoice, connection):
@@ -1011,13 +1013,14 @@ class TestRunStatusTemplate:
         old = world.ago(world.run(invoice, connection, state="starting"), 120)
         shown = self.page(http, invoice, account)
 
-        assert '<p class="qube-run-summary">Not confirmed by QuBe Sync yet</p>' in shown
+        assert '<p class="qube-run-summary">Still waiting for QuickBooks</p>' in shown
         assert 'action="/qube/runs/%s/retry_start"' % old.id in shown
         assert 'class="qube-retry-start"' in shown
+        assert "Try sending again" in shown
 
         world.run(invoice, connection, state="starting")  # a younger one, now the latest
         shown = self.page(http, invoice, account)
-        assert '<p class="qube-run-summary">Starting</p>' in shown
+        assert '<p class="qube-run-summary">Sending to QuickBooks</p>' in shown
         assert "qube-retry-start-form" not in shown
 
     def test_shows_nothing_for_a_record_with_no_runs(self, http, account, invoice):
@@ -1038,9 +1041,9 @@ class TestRunStatusTemplate:
         world.quiet(run, 11 * 60)
         shown = self.page(http, invoice, account)
 
-        assert '<p class="qube-run-quiet">No news from QuBe Sync about it for a while.</p>' in shown
+        assert '<p class="qube-run-quiet">No update from QuickBooks for a while.</p>' in shown
         assert 'action="/qube/runs/%s/redeliver"' % run.id in shown
-        assert '<button type="submit" class="qube-redeliver">Send its latest news again</button>' in shown
+        assert '<button type="submit" class="qube-redeliver">Check for updates</button>' in shown
 
     def test_raises_for_a_slug_no_operation_has(self, world, invoice):
         with pytest.raises(ValueError, match="no operation has the slug 'nope'"):
@@ -1110,46 +1113,33 @@ class TestRowsQuestion:
     def run(self, world, account, invoice):
         return world.run(invoice, world.connection(account), revision=6, question=ROWS_QUESTION, links={"decisions": DECISIONS, "search": SEARCH})
 
-    def rows(self, shown):
-        """Each body row's key and markup."""
-        body = shown.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
-        return [(html.unescape(key), markup) for key, markup in re.findall(r'<tr data-qube-row="([^"]+)"(.*?)</tr>', body, re.S)]
+    def test_shows_a_block_per_record_with_the_fields_it_asks_and_set_all(self, http, account, invoice, run):
+        doc = parse(page(http, invoice, account))
 
-    def cell(self, row, column):
-        return re.search(r'<td data-qube-col="%s"([^>]*)>(.*?)</td>' % column, row, re.S)
+        rows = doc.find_all(data_qube_row=True, data_qube_values=True)
+        assert [r["data-qube-row"] for r in rows] == ["customer_ref", "invoice_line_add.0.item_ref", "invoice_line_add.1.item_ref"]
+        assert doc.find("table") is None
+        customer = rows[0]
+        assert [i["value"] for i in customer.find_all("input", type="radio", name="data[records][customer_ref][action]")] == ["create", "use"]
+        assert customer.find(name="data[records][customer_ref][item_type]") is None
+        search = customer.find(data_qube_col="list_id").find(data_qube_search=True)
+        assert (search["data-qube-field"], search["data-qube-row"]) == ("records.list_id", "customer_ref")
+        assert search.find("input", type="hidden")["name"] == "data[records][customer_ref][list_id]"
+        asset = rows[1].find(data_qube_col="asset_account")
+        assert json.loads(asset["data-qube-when"]) == {"action": ["create"], "item_type": ["item_inventory"]}
+        assert "hidden" in asset.attrs and asset.find("input", type="search").get("disabled") is not None
+        assert rows[1].find("input", name="data[records][invoice_line_add.0.item_ref][quantity]") is not None
+        assert rows[2].find(data_qube_col="item_type").find(class_="qube-row-preset-value").words() == "Non-inventory part"
+        assert json.loads(rows[2]["data-qube-values"]) == {"item_type": "item_non_inventory"}
+        set_all = doc.find(data_qube_rows_set_all="action")
+        assert [b["data-qube-set-all"] for b in set_all.find_all("button")] == ["create", "use"]
 
-    def test_shows_a_table_a_row_per_record_the_columns_it_asks_and_a_bulk_bar(self, http, account, invoice, run):
+    def test_shows_an_enum_field_as_a_select_and_no_inline_script(self, http, account, invoice, run):
         shown = page(http, invoice, account)
 
-        rows = self.rows(shown)
-        assert [key for key, _ in rows] == ["customer_ref", "invoice_line_add.0.item_ref", "invoice_line_add.1.item_ref"]
-        customer = rows[0][1]
-        assert re.findall(r'<select name="data\[records\]\[customer_ref\]\[action\]"', customer)
-        assert "data[records][customer_ref][item_type]" not in customer
-        search = re.search(r'<div class="qube-search" ([^>]*)>', self.cell(customer, "list_id").group(2)).group(1)
-        assert 'data-qube-field="records.list_id"' in search
-        assert 'data-qube-row="customer_ref"' in search
-        assert 'name="data[records][customer_ref][list_id]"' in customer
-        when = re.search(r"data-qube-when=(['\"])(.*?)\1", self.cell(rows[1][1], "asset_account").group(1)).group(2)
-        assert json.loads(html.unescape(when)) == {"action": ["create"], "item_type": ["item_inventory"]}
-        assert 'name="data[records][invoice_line_add.0.item_ref][quantity]"' in rows[1][1]
-        assert self.cell(rows[2][1], "item_type").group(2).strip() == "Non-inventory part"
-        values = re.search(r"data-qube-values=(['\"])(.*?)\1", rows[2][1]).group(2)
-        assert json.loads(html.unescape(values)) == {"item_type": "item_non_inventory"}
-
-        bulk = shown.split('<tr class="qube-rows-bulk">', 1)[1].split("</tr>", 1)[0]
-        bulked = dict(re.findall(r'<td data-qube-bulk="([^"]+)">(.*?)</td>', bulk, re.S))
-        assert sorted(name for name, cell in bulked.items() if "qube-bulk-apply" in cell) == ["action", "asset_account", "income_account", "item_type"]
-        assert 'data-qube-field="records.income_account"' in bulked["income_account"]
-        assert "data-qube-row" not in bulked["income_account"]
-
-    def test_shows_an_enum_field_as_a_select_and_the_search_script_once(self, http, account, invoice, run):
-        shown = page(http, invoice, account)
-
-        assert re.search(r'<select id="[^"]+" name="data\[terms\]"', shown) or re.search(r'<select name="data\[terms\]"', shown)
-        assert '<option value="net30">Net 30</option>' in shown
-        assert shown.count('querySelectorAll(".qube-search:not([data-qube-ready])")') == 1
-        assert shown.count('querySelectorAll("[data-qube-rows]:not([data-qube-ready])")') == 1
+        terms = parse(shown).find("select", name="data[terms]")
+        assert [(o["value"], o.words()) for o in terms.find_all("option")] == [("", ""), ("net30", "Net 30")]
+        assert "<script" not in shown  # the behaviour script is a file the layout includes
 
     def test_answers_with_each_rows_filled_asked_columns_by_row_key(self, http, account, invoice, run, client):
         form = {

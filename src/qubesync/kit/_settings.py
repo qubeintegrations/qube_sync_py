@@ -21,7 +21,7 @@ from typing import Any, Dict, Optional
 
 from ._errors import CONFIG_FILE, NotConfigured
 
-__all__ = ["Settings", "configure", "settings", "reset"]
+__all__ = ["Settings", "configure", "settings", "reset", "UI_PIECES"]
 
 # Each setting, and what it is, for the error an unset one raises.
 _DESCRIPTIONS = {
@@ -47,7 +47,19 @@ _DESCRIPTIONS = {
     "production": "True in production, where Connect refuses simulated=1 (404)",
     "prune_runs_after": "a datetime.timedelta of a day or more: how long ended runs and requests are kept",
     "connection_type": '"realtime" (workflows run only on those) or "standard": what onboarding creates',
+    "ui_classes": 'your CSS classes for the screens, by piece: {"button": "btn btn-primary"}',
+    "messages": 'your words for the screens, by key: {"status.running": "Syncing with your accounts"}',
+    "storyboard": "True to show every screen with sample data at qube/storyboard",
+    "storyboard_layout": "the template the storyboard extends (its block content), or None for a page of its own",
 }
+
+# The pieces of the screens ui_classes can add classes to (qube_rails' UI_PIECES).
+UI_PIECES = (
+    "question message details choice choice_detail choice_description field label input select checkbox "
+    "button button_secondary search search_results search_result status summary detail error "
+    "rows row row_header segmented segment row_fields use_for_all stall "
+    "picks pick pick_detail pick_action reason button_ghost choice_footer choice_divider"
+).split()
 
 CONNECTION_TYPES = ("realtime", "standard")
 
@@ -93,6 +105,10 @@ class Settings(object):
                     self._values.pop(name, None)
                 elif name == "operations":
                     self._values[name] = {str(slug): op for slug, op in value.items()}
+                elif name == "ui_classes":
+                    self._values[name] = _ui_classes(value)
+                elif name == "messages":
+                    self._values[name] = _messages(value)
                 else:
                     self._values[name] = value
             if {"api_key", "base_url", "client"} & set(values):
@@ -143,6 +159,10 @@ class Settings(object):
             return None  # off until set
         if name == "connection_type":
             return "realtime"
+        if name in ("ui_classes", "messages"):
+            return {}
+        if name == "storyboard_layout":
+            return None
         if name == "dedupe":
             return self._default_dedupe()
         if name == "authorize_question":
@@ -247,12 +267,52 @@ def _validate(name, value):
             raise ValueError(
                 "qubesync.kit: connection_type is 'realtime' or 'standard', not %r, in %s" % (value, CONFIG_FILE)
             )
-    elif name == "production":
+    elif name in ("production", "storyboard"):
         if not isinstance(value, bool):
-            raise TypeError("qubesync.kit: production is True or False, in %s" % CONFIG_FILE)
+            raise TypeError("qubesync.kit: %s is True or False, in %s" % (name, CONFIG_FILE))
+    elif name == "storyboard_layout":
+        if not isinstance(value, str) or not value.strip():
+            raise TypeError("qubesync.kit: storyboard_layout is a template name, in %s" % CONFIG_FILE)
+    elif name in ("ui_classes", "messages"):
+        if not isinstance(value, dict):
+            raise TypeError("qubesync.kit: %s is a dict (%s), in %s" % (name, _DESCRIPTIONS[name], CONFIG_FILE))
+        if name == "ui_classes":
+            _ui_classes(value)
+        else:
+            _messages(value)
     elif name in ("api_key", "base_url", "webhook_url"):
         if not isinstance(value, str) or not value.strip():
             raise TypeError("qubesync.kit: %s is a non-empty string" % name)
+
+
+def _ui_classes(value):
+    # type: (Dict[Any, Any]) -> Dict[str, str]
+    """{piece: "classes"} from strings or lists of them; a piece not in UI_PIECES raises."""
+    classes = {}
+    for piece, names in value.items():
+        if str(piece) not in UI_PIECES:
+            raise ValueError(
+                "qubesync.kit: ui_classes has no piece %r: it takes %s, in %s" % (piece, ", ".join(UI_PIECES), CONFIG_FILE)
+            )
+        listed = [names] if isinstance(names, str) else list(names or [])
+        classes[str(piece)] = " ".join(str(name) for name in listed if name)
+    return classes
+
+
+def _messages(value):
+    # type: (Dict[Any, Any]) -> Dict[str, str]
+    """{key: text}, keys dotted or nested; a key the screens don't say raises."""
+    from ._messages import MESSAGES, flatten_messages
+
+    flat = flatten_messages(value)
+    for key, text in flat.items():
+        if key not in MESSAGES:
+            raise ValueError(
+                "qubesync.kit: messages has no key %r: it takes %s, in %s" % (key, ", ".join(sorted(MESSAGES)), CONFIG_FILE)
+            )
+        if not isinstance(text, str):
+            raise TypeError("qubesync.kit: messages[%r] is a string" % key)
+    return flat
 
 
 def _dedupe_store(store):
@@ -310,6 +370,11 @@ def configure(**values):
                         runs and requests older than that. Default None: kept
     connection_type     "realtime" or "standard": the type onboarding creates connections as.
                         Workflows run only on realtime ones. Default "realtime"
+    ui_classes          {piece: classes}: your CSS classes beside the qube- ones (UI_PIECES)
+    messages            {key: text}: your words for the screens (MESSAGES' keys)
+    storyboard          True to show every screen with sample data at qube/storyboard.
+                        Default: the adapter's guess at development (DEBUG, app.debug)
+    storyboard_layout   the template the storyboard extends, filling its block content
     """
     _SETTINGS.update(**values)
     return _SETTINGS

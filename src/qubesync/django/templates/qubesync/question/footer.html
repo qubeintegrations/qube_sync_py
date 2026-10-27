@@ -1,0 +1,4 @@
+{# The exits (question.exits: none of these, cancel) in a row; in a plain question every choice, the first primary. #}{% load qubesync %}
+<div class="{% qube_classes "choice_footer" "qube-choice-footer" %}"{% if question.plain %} data-qube-plain{% endif %}>
+  {% for choice in question.exits %}{% include "qubesync/question/choice.html" %}{% endfor %}
+</div>

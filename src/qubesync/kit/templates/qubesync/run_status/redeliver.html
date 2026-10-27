@@ -1,0 +1,8 @@
+{#- A run that looks stuck: posts to redeliver_url, which asks for its latest event again. -#}
+{% autoescape true %}
+<p class="qube-run-quiet">{{ run_status.quiet_text }}</p>
+<form class="qube-redeliver-form" method="post" action="{{ run_status.redeliver_url }}">
+  {% if csrf_token is defined and csrf_token %}<input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is callable else csrf_token }}">{% endif %}
+  <button type="submit" class="{{ qube_classes('button_secondary', 'qube-redeliver') }}">{{ qube_t('status.check_for_updates') }}</button>
+</form>
+{% endautoescape %}

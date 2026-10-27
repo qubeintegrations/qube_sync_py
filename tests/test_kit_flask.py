@@ -69,7 +69,7 @@ def test_init_app_registers_the_jinja_globals(app, world, account):
     with http.app.test_request_context("/"):
         shown = render_template_string("{{ qube_run_status(invoice, 'create_invoice') }}{{ qube_question(invoice, 'create_invoice') }}", invoice=invoice)
 
-    assert '<p class="qube-run-summary">Running</p>' in shown
+    assert '<p class="qube-run-summary">Syncing with QuickBooks</p>' in shown
     assert 'action="/qube/questions/runs/%s"' % run.id in shown
 
 
@@ -148,7 +148,7 @@ def test_without_a_secret_key_an_answer_that_cant_go_through_answers_as_text(app
     finally:
         http.app.secret_key = "kit-tests"
 
-    assert (response.status, response.text) == (409, kit.CHANGED)
+    assert (response.status, response.text) == (409, kit.t(kit.CHANGED))
 
 
 def test_run_status_html_takes_a_connection(app, world, account):

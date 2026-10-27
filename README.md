@@ -404,8 +404,8 @@ pip install "qubesync[django]>=0.4.0"    # or [flask], or [fastapi]
 
 | | The kit's tables | Routes | Templates |
 | --- | --- | --- | --- |
-| Django 3.2+ | `qubesync.django.models`, from its migrations (`python manage.py migrate qubesync`) | `include("qubesync.django.urls")` | `{% load qubesync %}`, `{% qube_question %}`, `{% qube_run_status %}`, `{% qube_error %}` |
-| Flask 2+ | `qubesync.kit.sqlalchemy` (SQLAlchemy 1.4+), through your session | `qubesync.flask.init_app(app)` | Jinja globals `qube_question`, `qube_run_status`, `qube_error` |
+| Django 3.2+ | `qubesync.django.models`, from its migrations (`python manage.py migrate qubesync`) | `include("qubesync.django.urls")` | `{% load qubesync %}`, `{% qube_question %}`, `{% qube_run_status %}`, `{% qube_error %}`, `{% qube_assets %}` |
+| Flask 2+ | `qubesync.kit.sqlalchemy` (SQLAlchemy 1.4+), through your session | `qubesync.flask.init_app(app)` | Jinja globals `qube_question`, `qube_run_status`, `qube_error`, `qube_assets` |
 | FastAPI | `qubesync.kit.sqlalchemy`, through your session | `qubesync.fastapi.router()` | `qubesync.fastapi.add_templates(templates)` |
 
 The tables are `qube_connections`, `qube_runs`, `qube_quickbooks_records`,
@@ -458,6 +458,10 @@ qubesync.kit.configure(
 | `production` | `True` where Connect must refuse `simulated=1` (404) | the adapter's guess: Django `not DEBUG`, Flask `not (app.debug or app.testing)`, FastAPI `not app.debug`; `True` elsewhere |
 | `prune_runs_after` | a `datetime.timedelta` of a day or more: `qubesync.kit.prune_runs()` deletes ended runs and requests older than that ([Storage](#storage)) | `None`: kept |
 | `connection_type` | `"realtime"` or `"standard"`: the type onboarding creates connections as. Workflows run only on realtime connections (billed as realtime); anything else raises `ValueError` | `"realtime"` |
+| `ui_classes` | your CSS classes for the screens, by piece (`{"button": "btn btn-primary"}`), added beside the `qube-` classes ([Styling](#styling)); an unknown piece raises `ValueError`, naming them | `{}` |
+| `messages` | your words for the screens, by key (`{"status.running": "..."}`, or nested), over the English ([Wording and translations](#wording-and-translations)); an unknown key raises `ValueError`, naming them | `{}` |
+| `storyboard` | whether `GET qube/storyboard` shows every screen with sample data ([The storyboard](#the-storyboard)) | the adapter's guess at development: Django `DEBUG`, Flask and FastAPI `app.debug` |
+| `storyboard_layout` | the template the storyboard extends, filling its block `content` (your base template) | `None`: a page of its own |
 
 A setting your app hasn't written raises `qubesync.kit.NotConfigured`, naming that file, the
 first time it's needed, so nothing silently passes. The environment is read at first use.
@@ -538,8 +542,11 @@ Relative to where your app mounts them:
 | `POST webhooks/qube/requests/<id>` | A plain request's webhooks ([Plain requests](#plain-requests)). |
 | `POST qube/questions/runs/<id>` | Your user's answer to the run's question, from the template: 303 back to the page. Once QuBe Sync takes it, the run is `running` again (its sync status `sending`) until its next webhook, which waits on the Web Connector's next poll. With a message when it didn't go through (the question has changed: a 409, or any 400, from QuBe Sync, and it's forgotten; or QuBe Sync's words for a field it couldn't take, a 422). Behind your sign-in and CSRF. |
 | `GET qube/questions/runs/<id>/search` | A record field's matches, as JSON (`q` of 2 to 100 characters and a `field`, else `[]`; a rows field's `row`, at most 200 characters). Behind your sign-in. |
-| `POST qube/runs/<id>/retry_start` | A start QuBe Sync never confirmed, sent again with the same reference, from the run status template: 303 back, with a message for a run that isn't `starting`. Behind your sign-in and CSRF, and `authorize_question`. |
-| `POST qube/runs/<id>/redeliver` | A run that looks stuck (`run.looks_stuck()`: confirmed, not ended, and quiet for 10 minutes while running or waiting on a question this app never got): asks QuBe Sync to send its latest event again (`redeliver_run`), from the run status template's "Send its latest news again" button. 303 back, with a message when QuBe Sync has nothing to send yet (409), was asked a moment ago (429) or didn't answer, or the run isn't quiet. Behind your sign-in and CSRF, and `authorize_question`. |
+| `POST qube/runs/<id>/retry_start` | A start QuBe Sync never confirmed, sent again with the same reference, from the run status template's "Try sending again": 303 back, with a message for a run that isn't `starting`. Behind your sign-in and CSRF, and `authorize_question`. |
+| `POST qube/runs/<id>/redeliver` | A run that looks stuck (`run.looks_stuck()`: confirmed, not ended, and quiet for 10 minutes while running or waiting on a question this app never got): asks QuBe Sync to send its latest event again (`redeliver_run`), from the run status template's "Check for updates" button. 303 back, with a message when QuBe Sync has nothing to send yet (409), was asked a moment ago (429) or didn't answer, or the run isn't quiet. Behind your sign-in and CSRF, and `authorize_question`. |
+| `GET qube/assets/<name>` | Flask and FastAPI: the behaviour script (`question.js`) and the stylesheet (`qubesync.css`), and nothing else. Not behind sign-in (FastAPI: on the webhooks router). Django serves them as static files. |
+| `GET qube/storyboard`, `GET qube/storyboard/<screen>` | Every screen with sample data, while the `storyboard` setting is on (404 otherwise). Behind your sign-in. |
+| `GET qube/storyboard/<screen>/search`, `POST qube/storyboard/<screen>/answer` | The storyboard's search, answered from the samples, and its answer, which sends nothing and goes back to the screen (303) saying so. |
 
 The webhook routes verify the signature (401 if it doesn't check out), answer 404 when the row
 isn't there, enqueue, and answer 200. No sign-in, no CSRF, the raw
@@ -844,20 +851,28 @@ The kit keeps every ending on the run row before your handler runs, under the sa
 `state`, `outcome`, a failure's `error` (as the event carried it: a sentence, or its code,
 message and detail), a cancel's `cancel_reason`, and `ended_at`. `run.ended()`, `run.failed()` and
 `run.cancelled()` say which (a run that completed on a `cancelled` outcome counts as cancelled),
-and `run.summary_text` says it in a sentence: "Added to QuickBooks", "Done", "Failed:
-<message>", "Cancelled: <reason>", "Waiting for your answer", "Starting", "Not confirmed by QuBe
-Sync yet" or "Running" (`run.error_message` and `run.error_detail` are its parts).
+and `run.summary_text` says it in a few words for your user: "Added to QuickBooks", "Done",
+"Couldn't sync", "Cancelled", "Needs your answer", "Sending to QuickBooks", "Still waiting for
+QuickBooks" or "Syncing with QuickBooks" (the words are the `messages` setting's: see [Wording and
+translations](#wording-and-translations)). `run.reason_text` says why it failed or was cancelled,
+as a sentence (the error's message, or the reason your app gave), and `None` otherwise
+(`run.error_message` and `run.error_detail` are a failure's parts).
 
-A start QuBe Sync hasn't confirmed for a minute (`run.unconfirmed()`) reads "Not confirmed by
-QuBe Sync yet", and the template offers a "Try the start again" button, posting to
-`qube/runs/<id>/retry_start`.
+A start QuBe Sync hasn't confirmed for a minute (`run.unconfirmed()`) reads "Still waiting for
+QuickBooks", and the template offers "Try sending again", posting to `qube/runs/<id>/retry_start`.
 
 A run QuBe Sync confirmed that has had no news for 10 minutes, running or waiting on a question
 this app never received (`run.looks_stuck()`), may have lost a webhook (the app was down longer
-than QuBe Sync's retries). The template then says "No news from QuBe Sync about it for a while."
-(`.qube-run-quiet`) and offers "Send its latest news again" (`.qube-redeliver`), posting to
+than QuBe Sync's retries). The template then says "No update from QuickBooks for a while."
+(`.qube-run-quiet`) and offers "Check for updates" (`.qube-redeliver`), posting to
 `qube/runs/<id>/redeliver`, which asks QuBe Sync to send the run's latest event again; it comes
 back through the webhook route, and one already applied is skipped by its revision.
+
+While the connection a record waits on is stalled (`status` `stalled`, with its `stall_reason`), a
+status waiting on QuickBooks (`sending`) reads "Waiting for QuickBooks" with a warning dot, says why
+and what to do (`qubesync/run_status/stall.html`: the Web Connector isn't checking in, or it can't
+open QuickBooks), and offers no "Check for updates": the cause is known. A question waiting on your
+user isn't affected.
 
 Show the record's status, and its question, on its page:
 
@@ -877,28 +892,281 @@ Show the record's status, and its question, on its page:
 The status reads the record's [sync status](#sync-status) on `connection`, else on the connection
 its latest run went out on, and shows its summary (`.qube-run-summary`, inside
 `.qube-run-status.qube-sync-<status>.qube-run-<state>`, with `data-qube-sync-status`) and, for a
-failure, the error's detail (`.qube-run-error-detail`); nothing before it's sent.
+failure or a cancel, why (`.qube-run-reason`) and the error's detail (`.qube-run-error-detail`);
+nothing before it's sent. Its pieces are `qubesync/run_status/*`: see [Styling](#styling).
 
 An answer, a start retry or a redelivery that can't go through goes back to the page with why,
 which whichever template comes first shows once (`.qube-error`): Django keeps it in the session,
 Flask in its session (so it needs a `SECRET_KEY`; without one the route answers the message as
 text with its status, 409 or 422), and FastAPI in `request.session` with Starlette's
-`SessionMiddleware`, else in a `qubesync_error` cookie that lasts 60 seconds and that the
-template's script clears once it's shown. The question shows the open question of that record's latest run of that operation,
-and nothing when that run isn't asking. Each choice is a form posting to the run's question
-route with your CSRF token (Django's; Flask-WTF's `csrf_token()`; a `csrf_token` you pass
-FastAPI's), and a record field's box searches through your app, so the API key never reaches
-the browser. For other markup, put your own `qubesync/question.html` or
-`qubesync/run_status.html` where your templates are found first. `question_context` and
-`run_status_context` in each adapter give their context for an `{% include %}`.
+`SessionMiddleware`, else in a `qubesync_error` cookie that lasts 60 seconds and that the error
+piece clears with a one-line inline script (with your `csp_nonce`) once it's shown.
+
+The question shows the open question of that record's latest run of that operation, and nothing
+when that run isn't asking. Each choice is a form posting to the run's question route with your
+CSRF token (Django's; Flask-WTF's `csrf_token()`; a `csrf_token` you pass FastAPI's), and a record
+field's box searches through your app, so the API key never reaches the browser. Its search boxes
+and rows fields need the behaviour script (`qube_assets` in your layout). Its pieces are
+`qubesync/question/*`. `question_context` and `run_status_context` in each adapter give their
+context for an `{% include %}`: `question` (a `QuestionView`, or `None`), `prompt` (as QuBe Sync
+sent it), `action` and `error`; `run_status` (a `RunStatusView`) with `sync`, `status`, `run`,
+`summary`, `state`, `detail`, `retry_action`, `redeliver_action` and `error`.
 
 A field with a fixed list (`enum`) shows as a select. A rows field (`add_transaction`'s one
-question for every record QuickBooks doesn't have) shows as a table
-(`qubesync/_question_rows.html`): a row per record with the columns it asks, a column shown only
-while its `when` holds, a search per record column (sent with the row), and a "Set selected" bar
-that fills a column on every ticked row. Its inputs are `data[<field>][<row key>][<column>]`, and
-its answer `{"records": {row key: {column: value}}}` (`qubesync.kit.rows_data`). The search
-script is `qubesync/_question_script.html`, rendered once; both scripts carry your CSP nonce.
+question for every record QuickBooks doesn't have) shows as a block per record, never a table and
+never scrolling sideways: the record's name, its choice (an enum column of up to three options,
+such as create or use, as a segmented control), then only the fields its answers so far call for
+(each column shown while its `when` holds), stacked, a search per record column (sent with the
+row). "Set all to:" sets that choice on every record, and "Use for all N" under a filled search or
+select copies it to the other records that ask it and are still empty. Its inputs are
+`data[<field>][<row key>][<column>]`, and its answer `{"records": {row key: {column: value}}}`
+(`qubesync.kit.rows_data`).
+
+### Styling
+
+The templates render plain, semantic HTML with `qube-` classes. Make them match your app three
+ways, from least to most work; [the storyboard](#the-storyboard) shows every screen at once while
+you do.
+
+#### 1. The stylesheet and its variables
+
+```django
+{# Django: your base template's <head> (django.contrib.staticfiles serves the files) #}
+{% load qubesync %}{% qube_assets stylesheet=True %}
+```
+
+```jinja
+{{ qube_assets(stylesheet=True) }}            {# Flask, after init_app #}
+{{ qube_assets(request, stylesheet=True) }}   {# FastAPI, after add_templates #}
+```
+
+`qube_assets` writes the behaviour script's tag (`question.js`, deferred; Django adds
+`request.csp_nonce` when django-csp sets one, Flask and FastAPI take `csp_nonce=`) and, with
+`stylesheet=True`, the opt-in stylesheet's (`qubesync.css`). Django serves them as static files
+(`qubesync/question.js`, `qubesync/qubesync.css`, so `collectstatic` picks them up); Flask and
+FastAPI at `GET qube/assets/<name>`. Elsewhere, serve the two files from
+`qubesync.kit.STATIC_DIR`. Without `stylesheet=True` nothing of ours styles your page.
+
+Every rule in `qubesync.css` is inside `:where()`, so it has no specificity and any rule of yours
+wins. It has no reset and no global styles. Theme it with CSS variables on `:root` or any element
+around the screens:
+
+```css
+:root {
+  --qube-accent: #4f46e5;      /* the primary button, focus rings, highlights; default: a calm blue */
+  --qube-accent-text: #fff;    /* text on the accent */
+  --qube-border: #e5e7eb;      /* hairlines; default: the text colour, faded */
+  --qube-control-border: #d1d5db; /* inputs and secondary buttons */
+  --qube-radius: 8px;          /* cards; controls take 2px less */
+  --qube-gap: 16px;
+  --qube-font: inherit;        /* default: the system font stack */
+  --qube-font-size: 0.875rem;
+  --qube-muted: #6b7280;
+  --qube-error: #c2410c;
+  --qube-success: #15803d;     /* the status dot once it's in QuickBooks */
+  --qube-warning: #d97706;     /* the status dot while it needs an answer or waits on a stalled connection */
+  --qube-surface: #fff;        /* cards, inputs, the matches; default: Canvas */
+  --qube-max-width: 52rem;     /* the question card */
+}
+```
+
+Light and dark follow your page's `color-scheme`: with `color-scheme: light dark` (or `dark`) on
+your page, the accent and status colours take their dark-mode shades and the surfaces follow
+`Canvas`. An app whose dark mode is a class should set `color-scheme: dark` with it, or set the
+variables there. Motion is short (transform and opacity only), and with `prefers-reduced-motion:
+reduce` the movement goes.
+
+#### 2. Class hooks
+
+The `ui_classes` setting adds your CSS framework's classes beside the `qube-` ones, by piece:
+
+```python
+qubesync.kit.configure(ui_classes={  # Bootstrap
+    "button": "btn btn-primary", "button_secondary": "btn btn-outline-secondary", "input": "form-control",
+    "select": "form-select", "checkbox": "form-check-input", "label": "form-label",
+    "error": "alert alert-danger", "status": "alert alert-light", "search_result": "list-group-item list-group-item-action",
+})
+```
+
+| Piece | Where |
+| --- | --- |
+| `question` | the question's `<section>` |
+| `message`, `details` | its sentence, its label/value table |
+| `choice` | each choice's `<form>` |
+| `button`, `button_secondary`, `button_ghost` | the one primary button (a form choice's submit, or a plain question's first choice; the retry button), the secondary ones (other exits, later forms, "Check for updates", "Set all to"'s), and cancel (`button_ghost`, else `button_secondary`) |
+| `picks`, `pick`, `pick_detail`, `pick_action` | the picks' list, each pick's option-row button (never `button`), its detail, its "Use this one" |
+| `choice_footer`, `choice_divider` | the exits' row; the "or" between picks and a form |
+| `choice_detail`, `choice_description` | a choice's detail (in its button) and description |
+| `field`, `label` | a field's wrapper and its label (and the rows field's) |
+| `input`, `select`, `checkbox` | text, number and search inputs; selects; checkboxes |
+| `search`, `search_results`, `search_result` | a search box's wrapper, its matches' container, each match (made by the script) |
+| `rows`, `row`, `row_header`, `row_fields` | a rows field's list of records, each record, its name, its fields |
+| `segmented`, `segment` | a record's choice as a segmented control, each option |
+| `use_for_all` | the "Use for all N" button under a field |
+| `status`, `summary`, `reason`, `detail` | the run status, its few words, why, a failure's detail |
+| `stall` | why it waits on a stalled connection |
+| `error` | a one-shot error |
+
+Values are a string or a list of them. An unknown piece raises when `configure` runs, naming these
+(`qubesync.kit.UI_PIECES`). The pieces call `qube_classes(piece, "qube-...")` (Django: `{% qube_classes
+"piece" "qube-..." %}`) for their classes.
+
+#### 3. Replacing a piece
+
+Each piece is a small template. Put a file at the same path in a template directory searched
+before the package's (Django: `DIRS`, or an app above `qubesync.django` in `INSTALLED_APPS`;
+Flask: your app's `templates/`; FastAPI: the `Jinja2Templates` you pass `add_templates`) and yours
+renders; everything else stays ours. The entry points (`qube_question`, `qube_run_status`,
+`qubesync/question.html`, `qubesync/run_status.html`) don't change. Django and Jinja ship the same
+pieces at the same paths.
+
+| Template | Reads | Renders |
+| --- | --- | --- |
+| `qubesync/question/question.html` | `question` | the section: error, message, details, choices |
+| `qubesync/question/message.html`, `details.html` | `question` | the sentence; the label/value rows |
+| `qubesync/question/picks.html`, `pick.html` | `question`; `question`, `choice` | the picks' list; one pick, a form posting `choice` |
+| `qubesync/question/choice.html` | `question`, `choice` | a form or exit choice: a form posting `choice` and `data[...]` with your CSRF token |
+| `qubesync/question/footer.html` | `question` | the exits' row |
+| `qubesync/question/field.html` | `field`, `control` | a field's wrapper and label around its control (HTML) |
+| `qubesync/question/fields/text.html`, `number.html`, `boolean.html`, `select.html`, `search.html`, `rows.html` | `field` | one field, by `field.type` |
+| `qubesync/question/rows/row.html` | `rows`, `row` | one record: its name, its choice, its fields |
+| `qubesync/question/rows/cell.html` | `cell` | one field of a record (shown while its `when` holds), or what it already has |
+| `qubesync/question/rows/segmented.html` | `field` | a short enum as a segmented control (radios posted as `field.input_name`) |
+| `qubesync/run_status/status.html` | `run_status` | the error, then the status: summary, detail, buttons |
+| `qubesync/run_status/summary.html`, `detail.html`, `stall.html`, `retry.html`, `redeliver.html` | `run_status` | each part (`stall.html` while its connection is stalled) |
+| `qubesync/error.html` | `message` | a one-shot error |
+
+The field pieces build their control and include `field.html` with it (Jinja: `{% set control
+%}...{% endset %}`; Django: `{% qube_capture as control %}...{% endqube_capture %}`). The values
+they read are view-models, plain Python objects in `qubesync.kit`. Their fields are the contract,
+kept stable across versions (qube_rails' names, in snake_case, without its `?`):
+
+- `QuestionView`: `picks`, `forms`, `exits`, `plain` (see below), `message`, `details` (each
+  `label`, `value`), `choices`, `token`, `action_url`, `search_url`, `error` (QuBe Sync's refusal,
+  or `None`), `prompt` (as QuBe Sync sent it).
+- `ChoiceView`: `id`, `label`, `detail`, `description`, `fields`, `index`, `action_url`,
+  `secondary` (cancel), `kind` (`"pick"`, `"form"` or `"exit"`), `style` (its button's:
+  `"primary"`, `"secondary"`, `"ghost"`, or `None` for a pick) and `button_piece` (its
+  `ui_classes` piece).
+- `FieldView`: `name`, `input_name` (post your value under it), `dom_id`, `type` (`text`,
+  `number`, `boolean`, `select`, `search` or `rows`), `label`, `required`, `options` (a select's,
+  each `value` and `label`), `kind` (a search's record kind), `search_url`, `search_field`,
+  `row_key`, `when`, `rows` (a `RowsView`), `disabled`, `template`, and `labelled`, `cell` (a rows
+  field's) and `segmented` (a cell's enum of up to three options).
+- `RowsView`: `name`, `label`, `input_name`, `search_url`, `columns` (FieldViews), `rows`,
+  `set_all` (the column "Set all to:" sets, or `None`). `RowView`: `key`, `label`, `detail`,
+  `values`, `values_json`, `index`, `header_id`, `cells` (the columns it asks or already has a
+  value for), `segmented_cells`, `field_cells`. `CellView`: `column`, `label`, `field` (`None` for
+  a value the record already has), `preset` (that value, read-only), `when`, `when_json`,
+  `hidden`, `required` (the column's; a hidden field isn't required until shown), `segmented`.
+- `RunStatusView`: `status` (`not_sent`, `sending`, `needs_answer`, `in_quickbooks`, `done`,
+  `failed`, `cancelled`), `state` (the run's), `summary` (a few words, for the pill), `reason` (why
+  it failed or was cancelled, a sentence), `detail`, `quiet_text`, `retry_url` and
+  `redeliver_url` (`None` when the button doesn't apply; post to them), `error`, `stall` (the
+  stalled connection's reason, such as `"not_checking_in"` or `"quickbooks_unavailable"`, while a
+  `sending` status waits on it; else `None`), `stall_text`, `visible`, `css_class` (with
+  `qube-connection-stalled` then; the element also gets `data-qube-stall="<reason>"`).
+  `RunStatusView.from_sync(sync, retry_url_for, redeliver_url_for, error=, connection=)` takes the
+  connection the page is about, else the latest run's.
+
+Choices show by kind. A pick (an item of a `choose` list: an id ending `:<n>`, no fields) is a
+quiet option row ending "Use this one"; with no picks, a plain choice before the first form is one
+too (a name clash's "Use the existing record"). Each form choice (one with fields) is its own
+section, "or" between it and what comes before, its submit the one filled button (only the first
+form's; later ones are secondary). The exits (none of these, cancel) sit in a row under a hairline,
+cancel as a ghost. A question with neither picks nor forms keeps its choices in one row, the first
+primary. So a screen never has more than one filled button. The form gets
+`data-qube-choice-kind`, the button `data-qube-button` (its style).
+
+A field override posts its value as `field.input_name`, so the route reads it as it reads ours: a
+checkbox `"true"`, a number as typed, a rows cell `data[<field>][<row key>][<column>]`.
+
+#### The behaviour script
+
+`question.js` is qube_rails' script, unchanged: one set of listeners on `document`, keyed only on
+`data-qube-*` attributes, so it works on any markup that carries them, needs no build and no CSP
+nonce (it's a file, not an inline script), and loads once however often it's included. Its
+contract (the search box, the rows field, a form whose required fields are all searches, the
+storyboard's copy buttons) is qube_rails' README's "The behaviour script". A custom combobox can
+skip it: `GET <question.action_url>/search?field=<field>&q=<2 to 100 characters>[&row=<row key>]`
+answers `[{"value", "label", "detail"}]` (at most 20, behind your sign-in); post the picked `value`
+under `field.input_name`.
+
+### Wording and translations
+
+Everything the screens say to your users is in `qubesync.kit.MESSAGES` (qube_rails' I18n keys,
+English). Nothing names QuBe Sync: to your users it's QuickBooks. To reword or translate a string,
+set its key in the `messages` setting (dotted, or nested as in a locale file); a key you don't set
+keeps the English:
+
+```python
+qubesync.kit.configure(messages={
+    "status.running": "Syncing with your accounts",
+    "errors": {"unreachable": "Couldn't reach the accounting sync just now. Try again in a minute."},
+})
+```
+
+| Key | English | Where |
+| --- | --- | --- |
+| `status.in_quickbooks` | In QuickBooks | the status, linked |
+| `status.added` | Added to QuickBooks | the status, an add that completed |
+| `status.done`, `status.done_with` | Done; Done: %{outcome} | the status, completed |
+| `status.failed` | Couldn't sync | the status, failed (why is `reason_text`, below it) |
+| `status.not_started` | it couldn't be sent | a failure's message for a start that never went out |
+| `status.cancelled` | Cancelled | the status, cancelled (the reason, if any, below it) |
+| `status.cancel_reason` | it was stopped before it finished | `run.cancel_reason_text` with no reason |
+| `status.needs_answer` | Needs your answer | the status, asking a question |
+| `status.starting` | Sending to QuickBooks | the status, just started |
+| `status.unconfirmed` | Still waiting for QuickBooks | the status, a start unconfirmed for a minute |
+| `status.running` | Syncing with QuickBooks | the status, running |
+| `status.quiet` | No update from QuickBooks for a while. | above the redeliver button |
+| `status.check_for_updates` | Check for updates | the redeliver button |
+| `status.try_again` | Try sending again | the retry button |
+| `status.waiting_for_quickbooks` | Waiting for QuickBooks | the status while its connection is stalled |
+| `status.stalled.not_checking_in`, `.quickbooks_unavailable`, `.other` | (a sentence each) | why, by the stall's reason |
+| `errors.not_starting` | This was already sent, so there's nothing to try again. | a retry of a start that isn't waiting |
+| `errors.not_quiet` | This was updated recently. Check again in a few minutes. | a redeliver of a run that isn't quiet |
+| `errors.no_update_yet` | There's no update yet. Check again in a few minutes. | a redeliver with nothing to send (409) |
+| `errors.checked_just_now` | That was checked a moment ago. Try again in a minute. | a redeliver asked too soon (429) |
+| `errors.unreachable` | Couldn't reach QuickBooks' sync service just now. Try again in a minute. | a redeliver QuBe Sync didn't answer |
+| `errors.disconnect_unreachable` | Couldn't reach QuickBooks' sync service just now. Try disconnecting again in a minute. | a disconnect QuBe Sync didn't answer |
+| `errors.still_syncing` | Something is still syncing with this company file. Let it finish, or answer its question, then disconnect. | a disconnect while work is going |
+| `errors.question_changed` | This question changed after the page loaded, so your answer wasn't sent. The page now shows the latest. | an answer to a changed question |
+| `errors.answer_refused`, `errors.answer_refused_with` | That answer couldn't be used. Check it and try again.; That answer couldn't be used: %{detail} | an answer QuBe Sync refused (422) |
+| `question.set_all` | Set all to: | before a rows field's buttons that set every record's choice |
+| `question.use_for_all` | Use for all %{count} | under a filled field other records ask too |
+| `question.or` | or | between picks and a form choice |
+| `question.use_pick` | Use this one | at the end of each pick's row |
+| `question.pick_a_match` | Pick one of the matches. | a search box with text but no pick, on submit |
+| `question.no_matches`, `question.searching`, `question.search_failed` | No matches; Searching…; Search isn't available right now. Try again in a moment. | the search box's matches |
+
+`qubesync.kit.t(key, **values)` looks one up as the templates do (`%{name}` filled from
+`values`). A question's own words (its message, details, choices and field labels) are QuBe Sync's
+prompt, in English. The route constants (`qubesync.kit.CHANGED`, `NOT_STARTING` and the rest) are
+these keys. The setting is one dict for the process: to translate per request, render with your
+own pieces, or set the words for your one language.
+
+### The storyboard
+
+`GET qube/storyboard` shows every screen your users can meet, from sample data, in your own
+layout, so your CSS and `ui_classes` apply: the run status (not sent, starting, an unconfirmed
+start with its retry button, running, waiting on a stalled connection (QuickBooks not checking in,
+or closed), waiting for an answer, looking stuck with its redeliver button, in QuickBooks, done,
+failed with its detail, cancelled), the one-shot error, and a question of each kind (a near match,
+a record search, a pick from a list, a fixed list, number and yes/no fields, a name clash, a lost
+answer, a missing customer, records not in QuickBooks yet, and a refused answer). Each screen is a
+section with the screen on a flat canvas, a note and its "Override files" (the templates to
+replace for it, each with a Copy button); the canvas can be shown as your page is, light or dark.
+`GET qube/storyboard/<screen>` shows one.
+
+It's on while the `storyboard` setting is true (by default in development: Django `DEBUG`, Flask
+and FastAPI `app.debug`), behind your sign-in. It fills the block `content` of the
+`storyboard_layout` setting's template (your base template, which should include `qube_assets
+stylesheet=True`), else a page of its own with the stylesheet. FastAPI renders it with the
+templates you last passed `add_templates`. It calls nothing: its searches answer from the samples
+(`qubesync/kit/storyboard/*.json`, qube_rails' samples, prompts shaped as QuBe Sync sends them),
+its forms post to a no-op that comes back with "Storyboard: nothing was sent.", and no row is
+written.
 
 ### Sync status
 
@@ -913,7 +1181,8 @@ status.qb_id         # its QuickBooks id on this connection, when it's linked
 status.error         # a failed run's error
 status.retry         # whether starting again makes sense (failed or cancelled, and not linked)
 status.unconfirmed   # a start QuBe Sync hasn't confirmed: run.retry_start()
-status.summary_text  # "In QuickBooks", "Waiting for your answer", "Failed: ...", or None
+status.summary_text  # "In QuickBooks", "Needs your answer", "Couldn't sync", or None
+status.run and status.run.reason_text   # why it failed or was cancelled, a sentence, or None
 status.run, status.link
 ```
 
@@ -965,6 +1234,9 @@ python manage.py migrate qubesync
   `DATA_UPLOAD_MAX_MEMORY_SIZE` (2.5 MB by default) doesn't cap them.
 - Each event is applied in `transaction.atomic` with the row read again under
   `select_for_update`. `record_type` keeps your model's label (`myapp.Invoice`).
+- `{% qube_assets stylesheet=True %}` in your base template's `<head>`; the files are the app's
+  static files (`django.contrib.staticfiles`). The storyboard is at `qubesync:storyboard` and
+  `qubesync:storyboard_screen`.
 
 ### Flask
 
@@ -985,6 +1257,9 @@ qubesync.flask.init_app(app, sign_in=login_required)
   under 5 MB refuses large webhooks first.
 - `record_type` keeps your model's module and class (`myapp.models.Invoice`), which the kit
   imports to find the row again.
+- `init_app` registers `qube_assets(stylesheet=False, csp_nonce=None)` for your layout's
+  `<head>`, and `qube_classes` and `qube_t`, which the pieces call (they also come in each
+  template's context, so `blueprints()` alone works).
 
 ### FastAPI
 
@@ -1003,21 +1278,28 @@ app.include_router(qubesync.fastapi.router(dependencies=[Depends(signed_in)]))
 - `db_session` is a `scoped_session`. The database and the calls to QuBe Sync run on a worker
   thread, which removes its session when the route is done. Answers read a form
   (`python-multipart`, in the extra).
+- `add_templates(templates)` registers `qube_assets(request, stylesheet=False, csp_nonce=None)`,
+  `qube_classes` and `qube_t` too, and is what the storyboard renders with. The assets are on the
+  webhooks router, behind nothing.
 
 ### Another framework
 
 `qubesync.kit.receive`, `connect`, `onboarding`, `disconnect`, `answer`, `search`,
-`retry_start` and `redeliver` do each route's work and return a `Reply` (`status`, and `text`, `json` or
+`retry_start`, `redeliver`, `storyboard_search` and `storyboard_answer` do each route's work and return a `Reply` (`status`, and `text`, `json` or
 `location`); an adapter reads the request, calls one, and writes the response. A `Reply` with an
 `error` is a redirect back whose message the adapter keeps for the page (or, when it can't,
 answers its `fallback` instead). `qubesync.kit.question_context` and `run_status_context` are the
-templates' context, taking that message as `error`.
+templates' context, taking that message as `error`; `storyboard_page(key, url_for)` is the
+storyboard's, `asset(name)` a static file's path and type, and the pieces need `qube_classes` and
+`qube_t` (`qubesync.kit.t`) in their context.
 
 ### What isn't ported
 
 qube_rails tells a record's pages to refresh (Turbo 8 page refreshes over Action Cable) when an
 event changes its run. Django, Flask and FastAPI have nothing that does that out of the box, so
-the kit doesn't: a reload shows the next question or the ending.
+the kit doesn't: a reload shows the next question or the ending. For the same reason a
+connection's stall or resume doesn't refresh its records' pages. The wording is one dict for the
+process (the `messages` setting), not Rails I18n's per-request locales.
 
 ### Storage
 

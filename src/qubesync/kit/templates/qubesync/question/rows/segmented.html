@@ -1,0 +1,15 @@
+{#- A short list (field.options, at most three) on a record as a segmented control: radios posted
+    as field.input_name, the column's label their group's name for screen readers. -#}
+{% autoescape true %}
+<fieldset class="qube-segmented-field">
+  <legend class="qube-visually-hidden">{{ field.label }}</legend>
+  <div class="{{ qube_classes('segmented', 'qube-segmented') }}">
+    {% for option in field.options %}
+    <label class="{{ qube_classes('segment', 'qube-segment') }}">
+      <input type="radio" name="{{ field.input_name }}" value="{{ option.value }}"{% if field.required %} required{% endif %}{% if field.disabled %} disabled{% endif %} class="qube-segment-input qube-rows-input" data-qube-rows-input>
+      <span>{{ option.label }}</span>
+    </label>
+    {% endfor %}
+  </div>
+</fieldset>
+{% endautoescape %}

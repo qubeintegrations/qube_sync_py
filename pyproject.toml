@@ -53,7 +53,19 @@ where = ["src"]
 qubesync = [
     "py.typed",
     "kit/templates/qubesync/*.html",
+    "kit/templates/qubesync/question/*.html",
+    "kit/templates/qubesync/question/fields/*.html",
+    "kit/templates/qubesync/question/rows/*.html",
+    "kit/templates/qubesync/run_status/*.html",
+    "kit/templates/qubesync/storyboard/*.html",
+    "kit/storyboard/*.json",
     "django/templates/qubesync/*.html",
+    "django/templates/qubesync/question/*.html",
+    "django/templates/qubesync/question/fields/*.html",
+    "django/templates/qubesync/question/rows/*.html",
+    "django/templates/qubesync/run_status/*.html",
+    "django/templates/qubesync/storyboard/*.html",
+    "django/static/qubesync/*",
 ]
 
 [tool.pytest.ini_options]

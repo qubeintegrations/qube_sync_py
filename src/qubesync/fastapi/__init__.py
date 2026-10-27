@@ -32,6 +32,10 @@ The routes, relative to where they're included (each named, for request.url_for)
     GET  /qube/questions/runs/{id}/search          qubesync_question_search
     POST /qube/runs/{id}/retry_start               qubesync_retry_start
     POST /qube/runs/{id}/redeliver                 qubesync_redeliver
+    GET  /qube/assets/{name}                       qubesync_asset (question.js, qubesync.css; on the webhooks router: no sign-in)
+    GET  /qube/storyboard[/{screen}]               qubesync_storyboard[_screen] (the storyboard setting)
+    GET  /qube/storyboard/{screen}/search          qubesync_storyboard_search
+    POST /qube/storyboard/{screen}/answer          qubesync_storyboard_answer (sends nothing)
 
 A message from a question or run route (why it didn't go through) goes back to the page in
 request.session with Starlette's SessionMiddleware, else in a short-lived qubesync_error cookie
@@ -51,8 +55,8 @@ from typing import Any, Dict, Optional, Sequence
 from urllib.parse import quote, unquote, urlparse
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse, Response
-from markupsafe import Markup
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
+from markupsafe import Markup, escape
 from starlette.concurrency import run_in_threadpool
 
 from .. import kit
@@ -70,6 +74,7 @@ __all__ = [
     "question_html",
     "run_status_html",
     "error_html",
+    "assets_html",
     "add_templates",
     "take_error",
     "TEMPLATES",
@@ -230,6 +235,14 @@ def routers():
         reply = await run_in_threadpool(_unit, kit.receive, "request", id, body, signature, None, request.url.path)
         return _response(reply)
 
+    # The behaviour script and the stylesheet, behind nothing as the webhooks are: two files.
+    @webhooks.get("/qube/assets/{name}", name="qubesync_asset")
+    def asset(name: str) -> Response:
+        found = kit.asset(name)
+        if found is None:
+            return Response(status_code=404)
+        return FileResponse(found[0], media_type=found[1], headers={"Cache-Control": "public, max-age=3600"})
+
     connections = APIRouter()
 
     @connections.post("/quickbooks/connections", name="qubesync_connections")
@@ -273,7 +286,62 @@ def routers():
     def redeliver(id: str, request: Request) -> Response:
         return _response(_unit(kit.redeliver, request, id, request.headers.get("referer"), _host(request)), request)
 
+    @questions.get("/qube/storyboard", name="qubesync_storyboard")
+    def storyboard(request: Request) -> Response:
+        return _storyboard_page(request, None)
+
+    @questions.get("/qube/storyboard/{screen}", name="qubesync_storyboard_screen")
+    def storyboard_screen(screen: str, request: Request) -> Response:
+        return _storyboard_page(request, screen)
+
+    @questions.get("/qube/storyboard/{screen}/search", name="qubesync_storyboard_search")
+    def storyboard_search(screen: str, request: Request) -> Response:
+        if not _storyboard_on(request):
+            return _response(kit.Reply(404, json=[]))
+        return _response(kit.storyboard_search(screen, request.query_params))
+
+    @questions.post("/qube/storyboard/{screen}/answer", name="qubesync_storyboard_answer")
+    def storyboard_answer(screen: str, request: Request) -> Response:
+        if not _storyboard_on(request):
+            return Response(status_code=404)
+        return _response(kit.storyboard_answer(screen, _storyboard_url(request)("screen", screen)))
+
     return Routers(webhooks, connections, questions)
+
+
+def _storyboard_on(request):
+    # type: (Request) -> bool
+    return kit.storyboard_on(bool(getattr(request.app, "debug", False)))
+
+
+def _storyboard_url(request):
+    # type: (Request) -> Any
+    def url_for(name, key):
+        # type: (str, Optional[str]) -> str
+        if name == "index":
+            return urlparse(str(request.url_for("qubesync_storyboard"))).path
+        return urlparse(str(request.url_for("qubesync_storyboard_%s" % name, screen=str(key)))).path
+
+    return url_for
+
+
+def _storyboard_page(request, key):
+    # type: (Request, Optional[str]) -> Response
+    """Every screen (or one) from sample data, rendered with the templates add_templates was
+    last given (so your layout and pieces apply), in the storyboard_layout setting's template."""
+    if not _storyboard_on(request):
+        return Response(status_code=404)
+    page = kit.storyboard_page(key, _storyboard_url(request), notice="sent" in request.query_params)
+    if page is None:
+        return Response(status_code=404)
+    values = {
+        "storyboard": page,
+        "layout": kit.settings().storyboard_layout,
+        "assets": assets_html(request, stylesheet=True),
+        "request": request,
+    }
+    templates = _templates[-1] if _templates else None
+    return HTMLResponse(_render(templates, "qubesync/storyboard.html", values))
 
 
 def router(dependencies=None, prefix=""):
@@ -328,13 +396,19 @@ def add_templates(templates):
     """Lets a Jinja2Templates (or a jinja2 Environment) find qubesync/question.html and
     qubesync/run_status.html, after its own directories, so yours come first, and registers
     qube_question(request, record, operation), qube_run_status(request, record, operation),
-    qube_sync_status(record, operation) and qube_error(request) as its globals."""
+    qube_sync_status(record, operation), qube_error(request) and qube_assets(request,
+    stylesheet=False) as its globals (with qube_classes and qube_t, which the pieces call). The
+    storyboard renders with the templates it was last given."""
     from jinja2 import ChoiceLoader, FileSystemLoader
 
     env = getattr(templates, "env", templates)
     ours = FileSystemLoader(TEMPLATES)
     env.loader = ChoiceLoader([env.loader, ours]) if env.loader is not None else ours
+    _templates[:] = [env]
     env.globals.update(
+        qube_assets=assets_html,
+        qube_classes=kit.qube_classes,
+        qube_t=kit.t,
         qube_question=lambda request, record, operation, **context: question_html(
             request, record, operation, templates=env, **context
         ),
@@ -348,6 +422,7 @@ def add_templates(templates):
 
 
 _environment = []  # type: list
+_templates = []  # type: list
 
 
 def _own_environment():
@@ -355,13 +430,16 @@ def _own_environment():
     if not _environment:
         from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-        _environment.append(Environment(loader=FileSystemLoader(TEMPLATES), autoescape=select_autoescape(default=True)))
+        env = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=select_autoescape(default=True))
+        env.globals.update(qube_classes=kit.qube_classes, qube_t=kit.t, qube_assets=assets_html)
+        _environment.append(env)
     return _environment[0]
 
 
 def _render(templates, name, values):
     # type: (Any, str, Dict[str, Any]) -> Markup
     env = getattr(templates, "env", templates) if templates is not None else _own_environment()
+    values = dict({"qube_classes": kit.qube_classes, "qube_t": kit.t}, **values)
     return Markup(env.get_template(name).render(**values))
 
 
@@ -384,5 +462,23 @@ def error_html(request, templates=None, **context):
     # type: (Request, Any, **Any) -> Markup
     """qubesync/_error.html with the message a route left (a disconnect refused, say), once:
     for a page without the run status or question."""
-    values = dict(take_error(request), request=request, **context)
-    return _render(templates, "qubesync/_error.html", values)
+    shown = take_error(request)
+    values = dict(shown, message=shown["error"], request=request, **context)
+    return _render(templates, "qubesync/error.html", values)
+
+
+def assets_html(request, stylesheet=False, csp_nonce=None):
+    # type: (Request, bool, Optional[str]) -> Markup
+    """The behaviour script's tag (deferred, with csp_nonce when you pass one) and, with
+    stylesheet=True, the opt-in stylesheet's: the qube_assets global, for your layout."""
+
+    def href(name):
+        # type: (str) -> str
+        return urlparse(str(request.url_for("qubesync_asset", name=name))).path
+
+    tags = []
+    if stylesheet:
+        tags.append('<link rel="stylesheet" href="%s" media="all">' % escape(href("qubesync.css")))
+    nonce = ' nonce="%s"' % escape(csp_nonce) if csp_nonce else ""
+    tags.append('<script src="%s" defer%s></script>' % (escape(href("question.js")), nonce))
+    return Markup("\n".join(tags))

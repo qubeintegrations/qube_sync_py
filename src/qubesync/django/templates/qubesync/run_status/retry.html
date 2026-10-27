@@ -1,0 +1,5 @@
+{# A start not confirmed for a minute: posts to retry_url, which sends it again, same reference. #}{% load qubesync %}
+<form class="qube-retry-start-form" method="post" action="{{ run_status.retry_url }}">
+  {% csrf_token %}
+  <button type="submit" class="{% qube_classes "button" "qube-retry-start" %}">{% qube_t "status.try_again" %}</button>
+</form>

@@ -55,6 +55,7 @@ if not settings.configured:
             }
         ],
         LOGIN_URL="/login",
+        STATIC_URL="/static/",
         USE_TZ=True,
         DEFAULT_AUTO_FIELD="django.db.models.AutoField",
         QUBESYNC_CONFIG="kitapp.config",

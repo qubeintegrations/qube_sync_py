@@ -1,0 +1,19 @@
+{% comment %}
+One field of a record (cell, a CellView): a segmented choice, a field with its label (and, for a
+search or a select, "Use for all"), or what the record already has, read-only. hidden and
+data-qube-hidden mark a field whose "when" doesn't hold yet; data-qube-required says to require
+it once shown.
+{% endcomment %}{% load qubesync %}
+<div class="qube-row-cell{% if cell.segmented %} qube-row-cell-segmented{% endif %}"{% if cell.hidden %} hidden{% endif %} data-qube-col="{{ cell.column }}" data-qube-when="{{ cell.when_json }}"{% if cell.hidden %} data-qube-hidden{% endif %}{% if cell.required %} data-qube-required{% endif %}>
+  {% if cell.segmented %}
+  {% include "qubesync/question/rows/segmented.html" with field=cell.field %}
+  {% elif cell.field %}
+  {% include cell.field.template with field=cell.field %}
+  {% if cell.field.type == "search" or cell.field.type == "select" %}<button type="button" class="{% qube_classes "use_for_all" "qube-use-for-all" %}" data-qube-use-for-all hidden></button>{% endif %}
+  {% else %}
+  <div class="qube-field qube-row-preset">
+    <span class="{% qube_classes "label" "qube-label" %}">{{ cell.label }}</span>
+    <span class="qube-row-preset-value">{{ cell.preset }}</span>
+  </div>
+  {% endif %}
+</div>

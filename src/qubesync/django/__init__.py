@@ -37,6 +37,9 @@ the qubesync namespace:
     GET  qube/questions/runs/<id>/search          question_search        behind login_required
     POST qube/runs/<id>/retry_start               retry_start            behind login_required and CSRF
     POST qube/runs/<id>/redeliver                 redeliver              behind login_required and CSRF
+    GET  qube/storyboard[/<screen>]               storyboard[_screen]    behind login_required; the storyboard setting
+    GET  qube/storyboard/<screen>/search          storyboard_search      behind login_required
+    POST qube/storyboard/<screen>/answer          storyboard_answer      behind login_required and CSRF; sends nothing
 
 On a record's page:
 
@@ -44,6 +47,11 @@ On a record's page:
     {% qube_run_status invoice "create_invoice" %}   {# connection=... for one company file #}
     {% qube_question invoice "create_invoice" %}
     {% qube_error %}   {# a route's message on a page without those two: a disconnect's #}
+
+and in your base template's <head>, the behaviour script and the opt-in stylesheet (static
+files: qubesync/question.js, qubesync/qubesync.css):
+
+    {% qube_assets stylesheet=True %}
 """
 try:
     import django as _django  # noqa: F401

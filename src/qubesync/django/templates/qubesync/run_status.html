@@ -1,33 +1,6 @@
 {% comment %}
-Where a record stands with QuickBooks for an operation (its SyncStatus), in a sentence, with a
-failure's detail and the buttons that apply: "Try the start again" for an unconfirmed start,
-"Send its latest news again" for a run that looks stuck. Nothing before it's sent.
-  {% load qubesync %}{% qube_run_status invoice "create_invoice" %}
-  {% qube_run_status invoice "create_invoice" connection=connection %}
-or include it with qubesync.django.run_status_context(...). Django escapes everything; the qube-
-classes are for your CSS. For other markup, put your own at templates/qubesync/run_status.html
-in a template directory Django searches first.
+Where a record stands with QuickBooks (run_status, a RunStatusView): {% qube_run_status invoice
+"create_invoice" %} (connection=... for one company file), or include it with
+qubesync.django.run_status_context(...). It renders the pieces under qubesync/run_status/.
 {% endcomment %}
-{% if error %}<p class="qube-error">{{ error }}</p>{% endif %}
-{% if sync and sync.status != "not_sent" %}
-<div class="qube-run-status qube-sync-{{ sync.status }}{% if state %} qube-run-{{ state }}{% endif %}"
-     data-qube-sync-status="{{ sync.status }}">
-  <p class="qube-run-summary">{{ summary }}</p>
-  {% if detail %}
-  <p class="qube-run-error-detail">{{ detail }}</p>
-  {% endif %}
-  {% if redeliver_action %}
-  <p class="qube-run-quiet">No news from QuBe Sync about it for a while.</p>
-  <form class="qube-redeliver-form" method="post" action="{{ redeliver_action }}">
-    {% csrf_token %}
-    <button type="submit" class="qube-redeliver">Send its latest news again</button>
-  </form>
-  {% endif %}
-  {% if retry_action %}
-  <form class="qube-retry-start-form" method="post" action="{{ retry_action }}">
-    {% csrf_token %}
-    <button type="submit" class="qube-retry-start">Try the start again</button>
-  </form>
-  {% endif %}
-</div>
-{% endif %}
+{% include "qubesync/run_status/status.html" %}

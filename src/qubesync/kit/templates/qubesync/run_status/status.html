@@ -1,0 +1,14 @@
+{#- A record's status (run_status, a RunStatusView): the error, then the summary, why it failed or
+    waits, and the buttons, or only the error before it's sent. -#}
+{% autoescape true %}
+{% with message=run_status.error %}{% include "qubesync/error.html" %}{% endwith %}
+{% if run_status.visible %}
+<div class="{{ qube_classes('status', run_status.css_class) }}" data-qube-sync-status="{{ run_status.status }}"{% if run_status.stall %} data-qube-stall="{{ run_status.stall }}"{% endif %}>
+  {% include "qubesync/run_status/summary.html" %}
+  {% if run_status.reason or run_status.detail %}{% include "qubesync/run_status/detail.html" %}{% endif %}
+  {% if run_status.stall %}{% include "qubesync/run_status/stall.html" %}{% endif %}
+  {% if run_status.redeliver_url %}{% include "qubesync/run_status/redeliver.html" %}{% endif %}
+  {% if run_status.retry_url %}{% include "qubesync/run_status/retry.html" %}{% endif %}
+</div>
+{% endif %}
+{% endautoescape %}

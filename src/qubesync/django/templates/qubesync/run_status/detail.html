@@ -1,0 +1,3 @@
+{# Why it failed or was cancelled (run_status.reason), then what to do about it (detail). #}{% load qubesync %}
+{% if run_status.reason %}<p class="{% qube_classes "reason" "qube-run-reason" %}">{{ run_status.reason }}</p>{% endif %}
+{% if run_status.detail %}<p class="{% qube_classes "detail" "qube-run-error-detail" %}">{{ run_status.detail }}</p>{% endif %}

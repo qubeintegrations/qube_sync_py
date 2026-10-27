@@ -1,87 +1,9 @@
 {% comment %}
-The question a QuBe Sync run is asking about a record, with a form per choice, or nothing when
-it isn't asking. Render it on the record's page with its operation's slug:
-  {% load qubesync %}{% qube_question invoice "create_invoice" %}
-or include it with qubesync.django.question_context(invoice, "create_invoice") in the page's
-context. It's the open question of the record's latest run of that operation, as
-Operation.question kept it on the run. Each form posts your user's choice to that run's
-question route, with its CSRF token, and a record field's box searches through it too, so the
-API key never reaches the browser. Django escapes everything, and the qube- classes are for
-your CSS. With django-csp, the scripts carry request.csp_nonce. A rows field is
-qubesync/_question_rows.html, the search script qubesync/_question_script.html.
-
-This is QuBe Sync's copy, updated with the package. For other markup, put your own at
-templates/qubesync/question.html in a template directory Django searches first (DIRS, or an
-app above qubesync.django in INSTALLED_APPS).
+The question a run is asking about a record (question, a QuestionView), or nothing when it isn't
+asking: {% load qubesync %}{% qube_question invoice "create_invoice" %}, or include it with
+qubesync.django.question_context(...). It renders the pieces under qubesync/question/; put your
+own copy of any piece at its path in a template directory Django searches first (README,
+"Styling"). Its search boxes and rows field need the behaviour script ({% qube_assets %} in your
+base template).
 {% endcomment %}
-{% if error %}<p class="qube-error">{{ error }}</p>{% endif %}
-{% if question %}
-<section class="qube-question">
-  <p class="qube-question-message">{{ question.message }}</p>
-  {% if question.details %}
-  <table class="qube-question-details">
-    {% for row in question.details %}
-    <tr><th scope="row">{{ row.label }}</th><td>{{ row.value }}</td></tr>
-    {% endfor %}
-  </table>
-  {% endif %}
-  {% for choice in question.choices %}
-  {% with n=forloop.counter0 %}
-  <form class="qube-choice" method="post" action="{{ action }}">
-    {% csrf_token %}
-    <input type="hidden" name="choice" value="{{ choice.id }}">
-    {% for field in choice.fields %}
-    {% if field.type == "rows" %}
-    {% include "qubesync/_question_rows.html" %}
-    {% else %}
-    <div class="qube-field">
-      <label for="qube-{{ question.token }}-{{ n }}-{{ field.name }}">
-        {{ field.label|default:field.name }}
-      </label>
-      {% if field.type == "record" %}
-      <div class="qube-search" data-qube-search="{{ action }}/search"
-           data-qube-field="{{ field.name }}">
-        <input type="search" class="qube-search-input" maxlength="100" autocomplete="off"
-               id="qube-{{ question.token }}-{{ n }}-{{ field.name }}"
-               {% if field.required %}required{% endif %}>
-        <input type="hidden" class="qube-search-value" name="data[{{ field.name }}]">
-        <div class="qube-search-results" aria-live="polite"></div>
-      </div>
-      {% elif field.enum %}
-      <select name="data[{{ field.name }}]" id="qube-{{ question.token }}-{{ n }}-{{ field.name }}"
-              {% if field.required %}required{% endif %}>
-        <option value=""></option>
-        {% for option in field.enum %}
-        <option value="{{ option.value }}">{{ option.label|default:option.value }}</option>
-        {% endfor %}
-      </select>
-      {% elif field.type == "boolean" %}
-      <input type="checkbox" name="data[{{ field.name }}]" value="true"
-             id="qube-{{ question.token }}-{{ n }}-{{ field.name }}">
-      {% elif field.type == "number" %}
-      <input type="number" step="any" name="data[{{ field.name }}]"
-             id="qube-{{ question.token }}-{{ n }}-{{ field.name }}"
-             {% if field.required %}required{% endif %}>
-      {% else %}
-      <input type="text" name="data[{{ field.name }}]"
-             id="qube-{{ question.token }}-{{ n }}-{{ field.name }}"
-             {% if field.required %}required{% endif %}>
-      {% endif %}
-    </div>
-    {% endif %}
-    {% endfor %}
-    <button type="submit" class="qube-choice-button">
-      {{ choice.label }}
-      {% if choice.detail %}
-      <span class="qube-choice-detail">{{ choice.detail }}</span>
-      {% endif %}
-    </button>
-    {% if choice.description %}
-    <p class="qube-choice-description">{{ choice.description }}</p>
-    {% endif %}
-  </form>
-  {% endwith %}
-  {% endfor %}
-  {% include "qubesync/_question_script.html" %}
-</section>
-{% endif %}
+{% if question %}{% include "qubesync/question/question.html" %}{% else %}{% include "qubesync/error.html" with message=error %}{% endif %}

@@ -6,15 +6,22 @@ Rails engine's partials are rendered:
     {% qube_question invoice "create_invoice" %}
     {% qube_sync_status invoice "create_invoice" as sync %}{% if sync.status != "in_quickbooks" %}...
     {% qube_error %}  (a route's message, on a page without the other two: a disconnect's)
+    {% qube_assets stylesheet=True %}  (in your base template's <head>: the behaviour script,
+                                        and the opt-in stylesheet)
+
+The pieces use {% qube_classes piece "qube-..." %} (their qube- classes and the ui_classes
+setting's), {% qube_t "status.running" %} (the messages setting's words) and
+{% qube_capture as control %}...{% endqube_capture %} (a field's control, for its wrapper).
 
 Each takes the record and its operation's slug, and passes the page's CSRF token and request
 on to the template (qubesync/question.html, qubesync/run_status.html). Whichever comes first
 shows the message a question or run route left in the session.
 """
-import json
-
 from django import template
+from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 
+from ... import kit
 from ...kit import SyncStatus
 from .. import question_context, run_status_context, take_error
 
@@ -53,28 +60,56 @@ def qube_sync_status(record, operation, connection=None):
 @register.inclusion_tag("qubesync/error.html", takes_context=True)
 def qube_error(context):
     """The message a route left in the session (a disconnect refused, say), once."""
-    return {"error": take_error(context.get("request"))}
+    return {"message": take_error(context.get("request"))}
 
 
-# A rows field's helpers for qubesync/_question_rows.html.
-@register.filter
-def qube_json(value):
-    """A dict as JSON (for a data- attribute, which Django escapes), {} for anything else."""
-    return json.dumps(value if isinstance(value, dict) else {})
+@register.simple_tag
+def qube_classes(piece, *base):
+    """A piece's classes: its qube- classes, then the ui_classes setting's for it."""
+    return kit.qube_classes(piece, *base)
 
 
-@register.filter
-def qube_row_values(row):
-    """A row's preset values ({} when it has none)."""
-    values = row.get("values") if isinstance(row, dict) else None
-    return values if isinstance(values, dict) else {}
+@register.simple_tag
+def qube_t(key, **values):
+    """A message the screens say (qubesync.kit.t), the messages setting's words over English."""
+    return kit.t(key, **values)
 
 
-@register.filter
-def qube_preset(column, row):
-    """A column's preset value for a row that doesn't ask it, as its enum label when it has one."""
-    preset = qube_row_values(row).get(column.get("name"))
-    for option in column.get("enum") or []:
-        if option.get("value") == preset:
-            return option.get("label") or preset
-    return "" if preset is None else preset
+@register.simple_tag(takes_context=True)
+def qube_assets(context, stylesheet=False):
+    """The behaviour script's tag (deferred, with request.csp_nonce when django-csp sets one)
+    and, with stylesheet=True, the opt-in stylesheet's, from your static files."""
+    from django.templatetags.static import static
+
+    request = context.get("request")
+    nonce = getattr(request, "csp_nonce", None) if request is not None else None
+    tags = []
+    if stylesheet:
+        tags.append(format_html('<link rel="stylesheet" href="{}" media="all">', static("qubesync/qubesync.css")))
+    if nonce:
+        tags.append(format_html('<script src="{}" defer nonce="{}"></script>', static("qubesync/question.js"), nonce))
+    else:
+        tags.append(format_html('<script src="{}" defer></script>', static("qubesync/question.js")))
+    return mark_safe("\n".join(tags))
+
+
+class _CaptureNode(template.Node):
+    def __init__(self, nodelist, name):
+        self.nodelist = nodelist
+        self.name = name
+
+    def render(self, context):
+        context[self.name] = mark_safe(self.nodelist.render(context))
+        return ""
+
+
+@register.tag
+def qube_capture(parser, token):
+    """{% qube_capture as control %}...{% endqube_capture %}: what's inside, rendered, as
+    control (safe HTML), for the field wrapper a field piece includes."""
+    bits = token.split_contents()
+    if len(bits) != 3 or bits[1] != "as":
+        raise template.TemplateSyntaxError("qube_capture takes 'as <name>'")
+    nodelist = parser.parse(("endqube_capture",))
+    parser.delete_first_token()
+    return _CaptureNode(nodelist, bits[2])

@@ -7,13 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Kit: a run's status is a few words for a pill ("Couldn't sync", "Cancelled", "Sending to
+  QuickBooks", "Still waiting for QuickBooks", "Syncing with QuickBooks", "Needs your answer"), and
+  why it failed or was cancelled is a sentence below it (`run.reason_text`,
+  `RunStatusView.reason`). The buttons read "Try sending again" and "Check for updates", and the
+  routes' messages no longer name QuBe Sync.
+- Kit: `question_context` gives `question` as a `QuestionView` (the prompt as sent is `prompt`), and
+  `run_status_context` adds `run_status`, a `RunStatusView`. The table-era rows template
+  (`qubesync/_question_rows.html`), its inline script (`qubesync/_question_script.html`) and the
+  Django filters `qube_json`, `qube_row_values` and `qube_preset` are gone.
+
 ### Added
-- Kit: the question template shows a rows field as a table (`qubesync/_question_rows.html`, Django
-  and Jinja): the columns each row asks, a search per record column with its row, "Set selected"
-  for many rows; a fixed list (`enum`) as a select. The search script is one partial,
-  `qubesync/_question_script.html`. A rows field's answer is `{row key: {column: value}}` from
-  `data[<field>][<row key>][<column>]` (`qubesync.kit.rows_data`), and the search route passes
-  `row` on. `Client.search` takes `row=`.
+- Kit: the screens can be made to look like the app (qube_rails' styling, ported). The question
+  and run status templates render small pieces (`qubesync/question/*`, `qubesync/run_status/*`,
+  `qubesync/error.html`, the same paths in Django and Jinja), each from a view-model
+  (`QuestionView`, `ChoiceView`, `FieldView`, `RowsView`, `RowView`, `CellView`,
+  `RunStatusView`); an app replaces a piece by putting its own at that path. The `ui_classes`
+  setting adds CSS classes by piece (`UI_PIECES`; an unknown one raises). One behaviour script
+  (`qubesync/question.js`) and an opt-in stylesheet (`qubesync/qubesync.css`, `--qube-*`
+  variables, every rule in `:where()`), static files under Django and `GET qube/assets/<name>`
+  under Flask and FastAPI, written into a layout by `{% qube_assets %}` / `qube_assets()`; no
+  inline script is left but FastAPI's cookie-clearing one without sessions.
+- Kit: a question's choices show by kind: picks as option rows ending "Use this one", a form per
+  section with the one filled button, exits in a footer. A rows field is a block per record, never
+  a table: its choice as a segmented control, only the fields its answers call for, "Set all to:"
+  and "Use for all N". The answer is still `data[<field>][<row key>][<column>]` (`rows_data`).
+- Kit: wording. Everything the screens say comes from `qubesync.kit.MESSAGES` (qube_rails' keys,
+  English, never naming QuBe Sync), reworded by the `messages` setting (dotted or nested keys;
+  an unknown one raises) and read with `qubesync.kit.t`. The route constants (`CHANGED`,
+  `NOT_STARTING` ...) are now those keys.
+- Kit: the storyboard. `GET qube/storyboard` and `qube/storyboard/<screen>` show every screen from
+  sample data (the run status in each state, the one-shot error, a question of each kind) in the
+  app's layout (the `storyboard_layout` setting, its block `content`), with each screen's
+  override files; its searches answer from the samples and its answers send nothing. On while the
+  `storyboard` setting is true, by default in development (Django `DEBUG`, Flask and FastAPI
+  `app.debug`), behind the app's sign-in.
+- Kit: the run status accounts for a stalled connection: "Waiting for QuickBooks", why and what to
+  do (`RunStatusView.stall`, `stall_text`), and no "Check for updates" while it's stalled.
+- Kit: a fixed list (`enum`) shows as a select, and the search route passes a rows field's `row`
+  on. `Client.search` takes `row=`.
 - Kit: onboarding makes realtime connections (the `connection_type` setting, `"realtime"` by
   default, or `"standard"`): workflows run only on realtime connections. A start QuBe Sync refuses
   as `realtime_required` (`Operation.start`, `run.retry_start()`) marks the run failed and raises

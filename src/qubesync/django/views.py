@@ -2,7 +2,7 @@
 its Reply into a response."""
 from typing import Optional
 
-from django.http import HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
+from django.http import Http404, HttpRequest, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
@@ -20,6 +20,9 @@ __all__ = [
     "search",
     "retry_start",
     "redeliver",
+    "storyboard",
+    "storyboard_search",
+    "storyboard_answer",
     "response",
 ]
 
@@ -165,3 +168,56 @@ def redeliver(request, id):
     """POST qube/runs/<id>/redeliver: qubesync.kit.redeliver."""
     referer = request.headers.get("Referer")
     return response(kit.redeliver(request, id, referer, request.get_host()), request)
+
+
+# -- The storyboard: every screen with sample data, while the storyboard setting is on --------
+
+
+def _storyboard_on():
+    # type: () -> bool
+    from django.conf import settings
+
+    return kit.storyboard_on(bool(settings.DEBUG))
+
+
+def _storyboard_url(name, key):
+    # type: (str, Optional[str]) -> str
+    from django.urls import reverse
+
+    if name == "index":
+        return reverse("qubesync:storyboard")
+    return reverse("qubesync:storyboard_%s" % name, args=[key])
+
+
+@require_GET
+def storyboard(request, screen=None):
+    # type: (HttpRequest, Optional[str]) -> HttpResponse
+    """GET qube/storyboard and qube/storyboard/<screen>: every screen (or one) from sample
+    data, in the storyboard_layout setting's template (its block content)."""
+    from django.shortcuts import render
+
+    if not _storyboard_on():
+        raise Http404("The storyboard is off (the storyboard setting).")
+    page = kit.storyboard_page(screen, _storyboard_url, notice="sent" in request.GET)
+    if page is None:
+        raise Http404("No such screen.")
+    layout = kit.settings().storyboard_layout or "qubesync/storyboard/page.html"
+    return render(request, "qubesync/storyboard.html", {"storyboard": page, "layout": layout})
+
+
+@require_GET
+def storyboard_search(request, screen):
+    # type: (HttpRequest, str) -> HttpResponse
+    """GET qube/storyboard/<screen>/search: matches from the samples."""
+    if not _storyboard_on():
+        return response(kit.Reply(404, json=[]))
+    return response(kit.storyboard_search(screen, request.GET))
+
+
+@require_POST
+def storyboard_answer(request, screen):
+    # type: (HttpRequest, str) -> HttpResponse
+    """POST qube/storyboard/<screen>/answer: sends nothing, and says so."""
+    if not _storyboard_on() or kit.storyboard_page(screen, _storyboard_url) is None:
+        raise Http404("No such screen.")
+    return response(kit.storyboard_answer(screen, _storyboard_url("screen", screen)))

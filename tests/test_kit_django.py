@@ -149,7 +149,10 @@ def test_patterns_takes_another_sign_in():
 
     urls.patterns(sign_in=staff_only)
 
-    assert sorted(seen) == ["answer", "connect", "disconnect", "disconnect_form", "onboarding", "redeliver", "retry_start", "search"]
+    assert sorted(seen) == [
+        "answer", "connect", "disconnect", "disconnect_form", "onboarding", "redeliver", "retry_start", "search",
+        "storyboard", "storyboard", "storyboard_answer", "storyboard_search",
+    ]
 
 
 def test_the_template_tags_render_with_the_pages_csrf_token(app, world, account):
@@ -162,7 +165,7 @@ def test_the_template_tags_render_with_the_pages_csrf_token(app, world, account)
 
     assert 'name="csrfmiddlewaretoken"' in page
     assert 'action="/qube/questions/runs/%s"' % run.id in page
-    assert '<p class="qube-run-summary">Running</p>' in page
+    assert '<p class="qube-run-summary">Syncing with QuickBooks</p>' in page
 
 
 def test_question_context_for_an_include(app, world, account):
@@ -171,9 +174,10 @@ def test_question_context_for_an_include(app, world, account):
 
     context = qube_django.question_context(invoice, "create_invoice")
 
-    assert context["question"] == QUESTION
+    assert context["prompt"] == QUESTION
+    assert [c.id for c in context["question"].choices] == [c["id"] for c in QUESTION["choices"]]
     assert context["action"] == "/qube/questions/runs/%s" % run.id
-    assert qube_django.run_status_context(invoice, "create_invoice")["summary"] == "Running"
+    assert qube_django.run_status_context(invoice, "create_invoice")["summary"] == "Syncing with QuickBooks"
 
 
 def test_the_app_overrides_a_template_by_path(app, world, account, tmp_path):
@@ -257,7 +261,7 @@ def test_without_a_session_an_answer_that_cant_go_through_answers_as_text(app, w
 
     response = views.answer(request, str(run.id))
 
-    assert (response.status_code, response.content.decode()) == (409, kit.CHANGED)
+    assert (response.status_code, response.content.decode()) == (409, kit.t(kit.CHANGED))
 
 
 def test_redirect_back_goes_back_with_the_message_for_the_page():

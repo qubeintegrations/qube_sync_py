@@ -185,9 +185,9 @@ def test_number_keeps_what_isnt_a_finite_number():
 
 def test_refusal_says_what_quickbooks_said():
     assert kit.refusal(api_error(422, {"detail": "count must be a whole number"})) == (
-        "QuBe Sync couldn't take that answer: count must be a whole number"
+        "That answer couldn't be used: count must be a whole number"
     )
-    assert kit.refusal(api_error(422)) == "QuBe Sync couldn't take that answer."
+    assert kit.refusal(api_error(422)) == "That answer couldn't be used. Check it and try again."
 
 
 def test_back_goes_to_this_apps_pages_only():

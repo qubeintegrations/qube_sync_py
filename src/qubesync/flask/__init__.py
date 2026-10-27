@@ -32,13 +32,18 @@ The routes, relative to url_prefix:
     GET  /qube/questions/runs/<id>/search          qubesync_questions.question_search
     POST /qube/runs/<id>/retry_start               qubesync_questions.retry_start
     POST /qube/runs/<id>/redeliver                 qubesync_questions.redeliver
+    GET  /qube/assets/<name>                       qubesync_questions.asset (question.js, qubesync.css; no sign-in)
+    GET  /qube/storyboard[/<screen>]               qubesync_questions.storyboard[_screen] (the storyboard setting)
+    GET  /qube/storyboard/<screen>/search          qubesync_questions.storyboard_search
+    POST /qube/storyboard/<screen>/answer          qubesync_questions.storyboard_answer (sends nothing)
 
 With Flask-WTF's CSRFProtect set up before the blueprints are registered, the webhooks
 blueprint is exempted from it (QuBe Sync signs its webhooks instead); set up after, call
 csrf.exempt(bps.webhooks) yourself. The templates' forms carry csrf_token() when Flask-WTF
 provides it. init_app registers qube_question(record, operation) and qube_run_status(record,
-operation, connection=None) as Jinja globals, for a record's page, and qube_error(), a route's
-message on a page without them (a disconnect's). A message from a question or
+operation, connection=None) as Jinja globals, for a record's page, qube_error(), a route's
+message on a page without them (a disconnect's), and qube_assets(stylesheet=False), the
+behaviour script's tag (and the opt-in stylesheet's) for your layout's <head>. A message from a question or
 run route (why it didn't go through) is kept in Flask's session, so it needs a SECRET_KEY;
 without one, the route answers it as text.
 """
@@ -51,8 +56,20 @@ import os
 from collections import namedtuple
 from typing import Any, Callable, Dict, Optional
 
-from flask import Blueprint, current_app, has_request_context, jsonify, redirect, render_template, request, session, url_for
-from markupsafe import Markup
+from flask import (
+    Blueprint,
+    abort,
+    current_app,
+    has_request_context,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    session,
+    url_for,
+)
+from markupsafe import Markup, escape
 
 from .. import kit
 from ..kit._job import enqueue_in_process
@@ -70,6 +87,7 @@ __all__ = [
     "question_html",
     "run_status_html",
     "error_html",
+    "assets_html",
     "take_error",
     "TEMPLATES",
 ]
@@ -246,13 +264,89 @@ def blueprints(sign_in=None, url_prefix=None):
     def redeliver(id):
         return _response(kit.redeliver(request, id, request.referrer, request.host))
 
+    # The behaviour script and the stylesheet, not behind sign-in: two files, nothing else.
+    @questions.route("/qube/assets/<name>", endpoint="asset")
+    def asset(name):
+        found = kit.asset(name)
+        if found is None:
+            abort(404)
+        return send_file(found[0], mimetype=found[1].split(";")[0], max_age=3600)
+
+    @questions.route("/qube/storyboard", endpoint="storyboard")
+    @guard
+    def storyboard():
+        return _storyboard_page(None)
+
+    @questions.route("/qube/storyboard/<screen>", endpoint="storyboard_screen")
+    @guard
+    def storyboard_screen(screen):
+        return _storyboard_page(screen)
+
+    @questions.route("/qube/storyboard/<screen>/search", endpoint="storyboard_search")
+    @guard
+    def storyboard_search(screen):
+        if not _storyboard_on():
+            return _response(kit.Reply(404, json=[]))
+        return _response(kit.storyboard_search(screen, request.args))
+
+    @questions.route("/qube/storyboard/<screen>/answer", methods=["POST"], endpoint="storyboard_answer")
+    @guard
+    def storyboard_answer(screen):
+        if not _storyboard_on():
+            abort(404)
+        return _response(kit.storyboard_answer(screen, _storyboard_url("screen", screen)))
+
     return Blueprints(webhooks, connections, questions)
+
+
+def _storyboard_on():
+    # type: () -> bool
+    return kit.storyboard_on(bool(current_app.debug))
+
+
+def _storyboard_url(name, key):
+    # type: (str, Optional[str]) -> str
+    if name == "index":
+        return url_for("qubesync_questions.storyboard")
+    return url_for("qubesync_questions.storyboard_%s" % name, screen=key)
+
+
+def _storyboard_page(key):
+    # type: (Optional[str]) -> Any
+    """Every screen (or one) from sample data, in the storyboard_layout setting's template."""
+    if not _storyboard_on():
+        abort(404)
+    page = kit.storyboard_page(key, _storyboard_url, notice="sent" in request.args)
+    if page is None:
+        abort(404)
+    values = dict(_helpers(), storyboard=page, layout=kit.settings().storyboard_layout, assets=assets_html(stylesheet=True))
+    return render_template("qubesync/storyboard.html", **values)
+
+
+def _helpers():
+    # type: () -> Dict[str, Any]
+    # What the pieces call: their classes and their words.
+    return {"qube_classes": kit.qube_classes, "qube_t": kit.t}
+
+
+def assets_html(stylesheet=False, csp_nonce=None):
+    # type: (bool, Optional[str]) -> Markup
+    """The behaviour script's tag (deferred, with csp_nonce when you pass one) and, with
+    stylesheet=True, the opt-in stylesheet's: the qube_assets Jinja global, for your layout."""
+    tags = []
+    if stylesheet:
+        href = url_for("qubesync_questions.asset", name="qubesync.css")
+        tags.append('<link rel="stylesheet" href="%s" media="all">' % escape(href))
+    nonce = ' nonce="%s"' % escape(csp_nonce) if csp_nonce else ""
+    tags.append('<script src="%s" defer%s></script>' % (escape(url_for("qubesync_questions.asset", name="question.js")), nonce))
+    return Markup("\n".join(tags))
 
 
 def init_app(app, sign_in=None, url_prefix=None):
     # type: (Any, Optional[Callable[[Any], Any]], Optional[str]) -> Blueprints
     """Registers the three blueprints on app, and qube_question, qube_run_status,
-    qube_sync_status and qube_error as Jinja globals, and returns the blueprints."""
+    qube_sync_status, qube_error and qube_assets as Jinja globals (with qube_classes and
+    qube_t, which the pieces call), and returns the blueprints."""
     bps = blueprints(sign_in=sign_in, url_prefix=url_prefix)
     for bp in bps:
         app.register_blueprint(bp)
@@ -261,6 +355,8 @@ def init_app(app, sign_in=None, url_prefix=None):
         qube_run_status=run_status_html,
         qube_sync_status=sync_status,
         qube_error=error_html,
+        qube_assets=assets_html,
+        **_helpers()
     )
     return bps
 
@@ -294,17 +390,19 @@ def question_html(record, operation, **context):
     # type: (Any, str, **Any) -> Markup
     """qubesync/question.html rendered for record (yours, at templates/qubesync/question.html,
     comes first). context adds to it (csp_nonce, say)."""
-    return Markup(render_template("qubesync/question.html", **dict(question_context(record, operation), **context)))
+    values = dict(_helpers(), **question_context(record, operation))
+    return Markup(render_template("qubesync/question.html", **dict(values, **context)))
 
 
 def run_status_html(record, operation, connection=None, **context):
     # type: (Any, str, Any, **Any) -> Markup
     """qubesync/run_status.html rendered for record."""
-    values = dict(run_status_context(record, operation, connection), **context)
-    return Markup(render_template("qubesync/run_status.html", **values))
+    values = dict(_helpers(), **run_status_context(record, operation, connection))
+    return Markup(render_template("qubesync/run_status.html", **dict(values, **context)))
 
 
 def error_html(**context):
     # type: (**Any) -> Markup
     """qubesync/_error.html with the message a route left (a disconnect refused, say), once."""
-    return Markup(render_template("qubesync/_error.html", **dict(error=take_error(), **context)))
+    message = take_error()
+    return Markup(render_template("qubesync/error.html", **dict(_helpers(), message=message, error=message, **context)))

@@ -2,7 +2,9 @@
 but the webhooks), add_templates and its globals, the packaged templates without one, and the
 scoped session removed after each route. The routes' status codes are in test_kit_routes.py,
 on all three adapters."""
+import html
 import os
+import re
 
 import pytest
 
@@ -88,7 +90,7 @@ def test_add_templates_registers_the_globals_and_lets_the_apps_template_win(app,
     shown = templates.env.from_string("{{ qube_run_status(request, invoice, 'create_invoice') }}{{ qube_question(request, invoice, 'create_invoice') }}").render(
         request=request, invoice=invoice
     )
-    assert '<p class="qube-run-summary">Running</p>' in shown
+    assert '<p class="qube-run-summary">Syncing with QuickBooks</p>' in shown
     assert 'action="/qube/questions/runs/%s"' % run.id in shown
 
     own = qube_fastapi.add_templates(Jinja2Templates(directory=os.path.join(HERE, "kit_templates", "override")))
@@ -177,7 +179,7 @@ def test_without_a_session_the_message_is_a_short_cookie_the_page_clears(app, wo
     cookie = response.headers["set-cookie"]
     assert cookie.startswith("%s=" % kit.ERROR_KEY) and "Max-Age=60" in cookie and "Path=/" in cookie
     shown = http.get("/invoices/%s" % invoice.id, account=account).text
-    assert shown.count('<p class="qube-error">This question changed since the page showed it, so that answer was not sent: the page now shows where it stands.</p>') == 1
+    assert [html.unescape(m) for m in re.findall(r'<p class="qube-error" role="alert">([^<]*)</p>', shown)] == [kit.t(kit.CHANGED)]
     assert 'document.cookie = "%s=; Max-Age=0; Path=/; SameSite=Lax"' % kit.ERROR_KEY in shown
 
 

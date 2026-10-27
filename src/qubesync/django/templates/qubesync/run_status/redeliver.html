@@ -1,0 +1,6 @@
+{# A run that looks stuck: posts to redeliver_url, which asks for its latest event again. #}{% load qubesync %}
+<p class="qube-run-quiet">{{ run_status.quiet_text }}</p>
+<form class="qube-redeliver-form" method="post" action="{{ run_status.redeliver_url }}">
+  {% csrf_token %}
+  <button type="submit" class="{% qube_classes "button_secondary" "qube-redeliver" %}">{% qube_t "status.check_for_updates" %}</button>
+</form>

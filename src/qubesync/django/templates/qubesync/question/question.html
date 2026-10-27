@@ -1,0 +1,20 @@
+{% comment %}
+A question (question, a QuestionView): a refusal, its message, what it's about, then its choices
+by kind: the picks (option rows), each form choice ("or" between), the exits in a footer. A
+question with neither picks nor forms shows its choices in one row.
+{% endcomment %}{% load qubesync %}
+<section class="{% qube_classes "question" "qube-question" %}" data-qube-question="{{ question.token }}">
+  {% include "qubesync/error.html" with message=question.error %}
+  {% include "qubesync/question/message.html" %}
+  {% if question.details %}{% include "qubesync/question/details.html" %}{% endif %}
+  <div class="qube-choices">
+    {% if question.picks %}{% include "qubesync/question/picks.html" %}{% endif %}
+    {% for choice in question.forms %}
+    {% if not forloop.first or question.picks %}
+    <div class="{% qube_classes "choice_divider" "qube-choice-divider" %}" role="separator"><span>{% qube_t "question.or" %}</span></div>
+    {% endif %}
+    {% include "qubesync/question/choice.html" %}
+    {% endfor %}
+    {% if question.exits %}{% include "qubesync/question/footer.html" %}{% endif %}
+  </div>
+</section>

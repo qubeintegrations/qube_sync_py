@@ -13,6 +13,10 @@ framework's response. An app on another framework can do the same.
     GET  qube/questions/runs/<id>/search         search: a record field's matches, as JSON
     POST qube/runs/<id>/retry_start              retry_start: an unconfirmed start sent again
     POST qube/runs/<id>/redeliver                redeliver: a stuck run's latest event sent again
+    GET  qube/assets/<name>                      asset: the behaviour script and the stylesheet
+    GET  qube/storyboard[/<screen>]              every screen with sample data (the storyboard setting)
+    GET  qube/storyboard/<screen>/search         storyboard_search: matches from the samples
+    POST qube/storyboard/<screen>/answer         storyboard_answer: sends nothing
 
 Onboarding, the questions and the retry go behind your sign-in (and CSRF, for the POSTs). The
 webhooks go behind nothing: the signature is what proves QuBe Sync sent them.
@@ -20,17 +24,20 @@ webhooks go behind nothing: the signature is what proves QuBe Sync sent them.
 import json
 import logging
 import math
+import os
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 from .. import webhooks
 from ..v2 import APIError
 from ._defaults import client
+from ._messages import MESSAGES, t
 from ._job import CONNECTION_KIND, REQUEST_KIND, RUN_KIND, enqueue_in_process
 from ._operation import NETWORK_ERRORS
 from ._settings import settings
 from ._models import ENDED_STATES
 from ._store import CONNECTION, QUEUED_REQUEST, RUN, current_store
+from ._views import QuestionView, RunStatusView
 
 log = logging.getLogger("qubesync.kit")
 
@@ -64,21 +71,24 @@ __all__ = [
     "rows_data",
     "refusal",
     "back",
+    "back_with_error",
+    "ASSETS",
+    "STATIC_DIR",
+    "asset",
+    "storyboard_on",
+    "storyboard_search",
+    "storyboard_answer",
 ]
 
-CHANGED = (
-    "This question changed since the page showed it, so that answer was not sent: "
-    "the page now shows where it stands."
-)
-NOT_STARTING = "This run isn't waiting for its start to be confirmed."
-NOT_QUIET = "QuBe Sync has been heard from about this run lately: nothing to ask for."
-REDELIVERY_REFUSED = {
-    409: "QuBe Sync has no news about this run to send yet.",
-    429: "That was asked a moment ago: give it a minute.",
-}
-NO_ANSWER = "QuBe Sync didn't answer: try again in a minute."
-RUNS_GOING = "It has a run or request that hasn't ended: wait for it, or answer its question, first."
-DISCONNECT_NO_ANSWER = "QuBe Sync didn't answer: try disconnecting again in a minute."
+# What the page says when a route can't, as message keys (qubesync.kit.t; the messages
+# setting rewords them).
+CHANGED = "errors.question_changed"
+NOT_STARTING = "errors.not_starting"
+NOT_QUIET = "errors.not_quiet"
+REDELIVERY_REFUSED = {409: "errors.no_update_yet", 429: "errors.checked_just_now"}
+NO_ANSWER = "errors.unreachable"
+RUNS_GOING = "errors.still_syncing"
+DISCONNECT_NO_ANSWER = "errors.disconnect_unreachable"
 
 # Where an adapter keeps a Reply's error for the templates to show once (session key, cookie).
 ERROR_KEY = "qubesync_error"
@@ -461,7 +471,7 @@ def _searchable(q, field):
 
 def retry_start(request, run_id, referer=None, host=None):
     # type: (Any, Any, Optional[str], Optional[str]) -> Reply
-    """POST qube/runs/<id>/retry_start, from the run status template's "Try the start again"
+    """POST qube/runs/<id>/retry_start, from the run status template's "Try sending again"
     button: sends a start QuBe Sync never confirmed (a run still "starting") again, with the
     same reference as its Idempotency-Key (Run.retry_start), so a start that did land answers
     with its run rather than making another. authorize_question decides who may, as for
@@ -484,8 +494,8 @@ def retry_start(request, run_id, referer=None, host=None):
 
 def redeliver(request, run_id, referer=None, host=None):
     # type: (Any, Any, Optional[str], Optional[str]) -> Reply
-    """POST qube/runs/<id>/redeliver, from the run status template's "Send its latest news
-    again" button on a run that looks stuck (Run.looks_stuck): QuBe Sync sends the run's latest
+    """POST qube/runs/<id>/redeliver, from the run status template's "Check for updates"
+    button on a run that looks stuck (Run.looks_stuck): QuBe Sync sends the run's latest
     event again, through the webhook route. Back to the page, with why when it can't."""
     found = authorized_run(request, run_id, "a redelivery")
     if isinstance(found, Reply):
@@ -507,8 +517,10 @@ def redeliver(request, run_id, referer=None, host=None):
 
 def back_with_error(message, status, referer=None, host=None):
     # type: (str, int, Optional[str], Optional[str]) -> Reply
-    """Back to the page with message for the templates to show once, or, where the adapter
-    can't keep it, message as text with status."""
+    """Back to the page with message (a message key, such as CHANGED, or the sentence itself)
+    for the templates to show once, or, where the adapter can't keep it, as text with status."""
+    if message in MESSAGES:
+        message = t(message)
     return Reply(303, location=back(referer, host), error=message, fallback=Reply(status, text=message))
 
 
@@ -517,23 +529,24 @@ def back_with_error(message, status, referer=None, host=None):
 
 def question_context(record, operation, action_for, error=None):
     # type: (Any, str, Callable[[Any], str], Optional[str]) -> Dict[str, Any]
-    """What the question template (qubesync/question.html) reads: the open question of
-    record's latest run of operation (a slug), if it's asking, action (action_for(run), its
-    question route), and error (a message to show once). Raises ValueError for a slug none of
-    your operations has."""
+    """What the question template (qubesync/question.html) reads: question, a QuestionView of
+    the open question of record's latest run of operation (a slug), or None when it isn't
+    asking; prompt (as QuBe Sync sent it), run, action (action_for(run), its question route)
+    and error (a message to show once). Raises ValueError for a slug none of your operations
+    has."""
     _check_operation(operation)
     run = current_store().model(RUN).latest_for(record, operation)
-    question = run.open_question if run is not None else None
+    question = QuestionView.from_run(run, action_for, error=error)
     if question is None:
-        return {"question": None, "run": run, "action": None, "error": error}
-    return {"question": question, "run": run, "action": action_for(run), "error": error}
+        return {"question": None, "prompt": None, "run": run, "action": None, "error": error}
+    return {"question": question, "prompt": question.prompt, "run": run, "action": question.action_url, "error": error}
 
 
 def run_status_context(record, operation, retry_action_for, redeliver_action_for=None, connection=None, error=None):
     # type: (Any, str, Callable[[Any], str], Optional[Callable[[Any], str]], Any, Optional[str]) -> Dict[str, Any]
-    """What the run status template (qubesync/run_status.html) reads: sync (the SyncStatus on
-    connection, else on the latest run's), its run, summary, state (for the class), a failure's
-    detail, retry_action for an unconfirmed start, redeliver_action for a run that looks stuck,
+    """What the run status template (qubesync/run_status.html) reads: run_status, a
+    RunStatusView of the record's SyncStatus on connection (else on the latest run's), and its
+    parts as before: sync, status, run, summary, state, detail, retry_action, redeliver_action
     and error (a message to show once). Raises ValueError for a slug none of your operations
     has."""
     from ._sync_status import SyncStatus
@@ -543,33 +556,19 @@ def run_status_context(record, operation, retry_action_for, redeliver_action_for
         sync = connection.sync_status(record, operation)
     else:
         sync = SyncStatus.latest(record, operation)
-    run = sync.run
+    view = RunStatusView.from_sync(sync, retry_action_for, redeliver_action_for, error=error, connection=connection)
     return {
+        "run_status": view,
         "sync": sync,
         "status": sync.status,
-        "run": run,
-        "summary": sync.summary_text,
-        "state": _state_class(run),
-        "detail": run.error_detail if sync.status == "failed" else None,
-        "retry_action": retry_action_for(run) if sync.unconfirmed else None,
-        "redeliver_action": _redeliver_action(run, redeliver_action_for),
+        "run": sync.run,
+        "summary": view.summary,
+        "state": view.state,
+        "detail": view.detail,
+        "retry_action": view.retry_url,
+        "redeliver_action": view.redeliver_url,
         "error": error,
     }
-
-
-def _state_class(run):
-    # type: (Any) -> Optional[str]
-    # A completed run that chose to stop reads as cancelled.
-    if run is None:
-        return None
-    return "cancelled" if run.cancelled() else run.state
-
-
-def _redeliver_action(run, redeliver_action_for):
-    # type: (Any, Optional[Callable[[Any], str]]) -> Optional[str]
-    if run is None or redeliver_action_for is None or not run.looks_stuck():
-        return None
-    return redeliver_action_for(run)
 
 
 def _check_operation(operation):
@@ -649,8 +648,8 @@ def refusal(error):
     except (ValueError, KeyError, TypeError):
         detail = None
     if detail:
-        return "QuBe Sync couldn't take that answer: %s" % detail
-    return "QuBe Sync couldn't take that answer."
+        return t("errors.answer_refused_with", detail=detail)
+    return t("errors.answer_refused")
 
 
 def back(referer, host):
@@ -670,3 +669,47 @@ def back(referer, host):
 def _local_path(referer):
     # type: (str) -> bool
     return referer.startswith("/") and not referer.startswith(("//", "/\\"))
+
+
+# -- The assets and the storyboard -----------------------------------------------------------
+
+# The behaviour script and the opt-in stylesheet: one copy, in the Django app's static
+# directory (qubesync/question.js, qubesync/qubesync.css), served by each adapter.
+STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "django", "static", "qubesync")
+ASSETS = {"question.js": "text/javascript; charset=utf-8", "qubesync.css": "text/css; charset=utf-8"}
+
+
+def asset(name):
+    # type: (str) -> Optional[Tuple[str, str]]
+    """(path, content type) for one of ASSETS, or None: nothing else is served."""
+    if name not in ASSETS:
+        return None
+    return os.path.join(STATIC_DIR, name), ASSETS[name]
+
+
+def storyboard_on(development):
+    # type: (bool) -> bool
+    """The storyboard setting, else development (the adapter's guess)."""
+    return settings().get("storyboard", development) is True
+
+
+def storyboard_search(key, args):
+    # type: (str, Mapping[str, Any]) -> Reply
+    """GET qube/storyboard/<screen>/search: the sample's matches, as the search route answers."""
+    from ._storyboard import find, matches
+
+    screen = find(key)
+    if screen is None:
+        return Reply(404, json=[])
+    return Reply(200, json=matches(screen, args.get("field"), args.get("q")))
+
+
+def storyboard_answer(key, screen_url):
+    # type: (str, str) -> Reply
+    """POST qube/storyboard/<screen>/answer: sends nothing, and goes back to the screen, which
+    says so."""
+    from ._storyboard import find
+
+    if find(key) is None:
+        return Reply(404, text="Not found.")
+    return Reply(303, location="%s?sent=0" % screen_url)

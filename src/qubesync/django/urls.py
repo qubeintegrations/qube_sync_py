@@ -52,6 +52,12 @@ def patterns(sign_in=None):
         # field's search.
         path("qube/questions/runs/<str:id>", sign_in(views.answer), name="question"),
         path("qube/questions/runs/<str:id>/search", sign_in(views.search), name="question_search"),
+        # Every screen with sample data, while the storyboard setting is on (by default, with
+        # DEBUG): a search answered from the samples, and an answer that sends nothing.
+        path("qube/storyboard", sign_in(views.storyboard), name="storyboard"),
+        path("qube/storyboard/<str:screen>", sign_in(views.storyboard), name="storyboard_screen"),
+        path("qube/storyboard/<str:screen>/search", sign_in(views.storyboard_search), name="storyboard_search"),
+        path("qube/storyboard/<str:screen>/answer", sign_in(views.storyboard_answer), name="storyboard_answer"),
     ]
 
 

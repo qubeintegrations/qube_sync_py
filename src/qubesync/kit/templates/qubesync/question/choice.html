@@ -1,0 +1,15 @@
+{#- A form or exit choice (choice, a ChoiceView): a form posting choice=<id> and data[...] for its
+    fields. Its button is choice.style's ("primary", "secondary" or "ghost"), with that
+    ui_classes piece (choice.button_piece). -#}
+{% autoescape true %}
+<form class="{{ qube_classes('choice', 'qube-choice', 'qube-choice-form' if choice.kind == 'form' else none) }}" method="post" action="{{ choice.action_url }}" data-qube-choice="{{ choice.id }}" data-qube-choice-kind="{{ choice.kind }}">
+  {% if csrf_token is defined and csrf_token %}<input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is callable else csrf_token }}">{% endif %}
+  <input type="hidden" name="choice" value="{{ choice.id }}">
+  {% for field in choice.fields %}{% include field.template %}{% endfor %}
+  <button type="submit" class="{{ qube_classes(choice.button_piece, 'qube-choice-button') }}" data-qube-button="{{ choice.style }}">
+    {{ choice.label }}
+    {% if choice.detail %}<span class="{{ qube_classes('choice_detail', 'qube-choice-detail') }}">{{ choice.detail }}</span>{% endif %}
+  </button>
+  {% if choice.description %}<p class="{{ qube_classes('choice_description', 'qube-choice-description') }}">{{ choice.description }}</p>{% endif %}
+</form>
+{% endautoescape %}

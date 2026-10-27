@@ -4,6 +4,7 @@ The README's "Sync status" says how run and link are weighed; nothing is stored 
 """
 from typing import Any, Optional
 
+from ._messages import t
 from ._store import QUICKBOOKS_RECORD, RUN, current_store
 
 __all__ = ["SyncStatus", "STATUSES"]
@@ -73,7 +74,7 @@ class SyncStatus(object):
         if self.status == "not_sent":
             return None
         if self._linked_without_completed_run():
-            return "In QuickBooks"
+            return t("status.in_quickbooks")
         return self.run.summary_text
 
     def _linked_without_completed_run(self):
