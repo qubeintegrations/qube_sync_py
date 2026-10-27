@@ -36,6 +36,9 @@
     {% for field in choice.fields or [] %}
     {% set id = "qube-%s-%s-%s"|format(question.token, n, field.name) %}
     {% set name = "data[%s]"|format(field.name) %}
+    {% if field.type == "rows" %}
+    {% include "qubesync/_question_rows.html" %}
+    {% else %}
     <div class="qube-field">
       <label for="{{ id }}">{{ field.label or field.name }}</label>
       {% if field.type == "record" %}
@@ -46,66 +49,13 @@
         <input type="hidden" class="qube-search-value" name="{{ name }}">
         <div class="qube-search-results" aria-live="polite"></div>
       </div>
-      <script{% if csp_nonce is defined %} nonce="{{ csp_nonce }}"{% endif %}>
-      {% raw %}
-      // A record field's search box: what your user types is looked up through your
-      // app's search route (data-qube-search), and the match they pick fills the field.
-      // Plain JavaScript for the browser, no build; it binds each box once.
-      (function () {
-        var boxes = document.querySelectorAll(".qube-search:not([data-qube-ready])");
-        Array.prototype.forEach.call(boxes, function (box) {
-          box.setAttribute("data-qube-ready", "");
-          var input = box.querySelector(".qube-search-input");
-          var value = box.querySelector(".qube-search-value");
-          var results = box.querySelector(".qube-search-results");
-          var timer = null;
-          var asked = 0;
-          // Until a match is picked, the form won't send what was typed.
-          var check = function () {
-            var unpicked = input.value && !value.value;
-            input.setCustomValidity(unpicked ? "Pick one of the matches." : "");
-          };
-          input.addEventListener("input", function () {
-            value.value = "";
-            check();
-            clearTimeout(timer);
-            results.textContent = "";
-            var q = input.value.trim();
-            if (q.length < 2) return;
-            timer = setTimeout(function () {
-              var n = ++asked;
-              var url = box.getAttribute("data-qube-search") +
-                "?field=" + encodeURIComponent(box.getAttribute("data-qube-field")) +
-                "&q=" + encodeURIComponent(q);
-              fetch(url, {
-                headers: { Accept: "application/json" },
-                credentials: "same-origin",
-              })
-                .then(function (res) { return res.ok ? res.json() : []; })
-                .then(function (matches) {
-                  if (n !== asked) return; // a later search has gone out since
-                  results.textContent = matches.length ? "" : "No matches.";
-                  matches.forEach(function (match) {
-                    var pick = document.createElement("button");
-                    pick.type = "button";
-                    pick.className = "qube-search-result";
-                    pick.textContent = match.label;
-                    if (match.detail) pick.textContent += " · " + match.detail;
-                    pick.addEventListener("click", function () {
-                      value.value = match.value;
-                      input.value = match.label;
-                      results.textContent = "";
-                      check();
-                    });
-                    results.appendChild(pick);
-                  });
-                });
-            }, 250);
-          });
-        });
-      })();
-      {% endraw %}
-      </script>
+      {% elif field.enum %}
+      <select id="{{ id }}" name="{{ name }}" {% if field.required %}required{% endif %}>
+        <option value=""></option>
+        {% for option in field.enum %}
+        <option value="{{ option.value }}">{{ option.label or option.value }}</option>
+        {% endfor %}
+      </select>
       {% elif field.type == "boolean" %}
       <input type="checkbox" id="{{ id }}" name="{{ name }}" value="true">
       {% elif field.type == "number" %}
@@ -116,6 +66,7 @@
              {% if field.required %}required{% endif %}>
       {% endif %}
     </div>
+    {% endif %}
     {% endfor %}
     <button type="submit" class="qube-choice-button">
       {{ choice.label }}
@@ -128,6 +79,7 @@
     {% endif %}
   </form>
   {% endfor %}
+  {% include "qubesync/_question_script.html" %}
 </section>
 {% endif %}
 {% endautoescape %}

@@ -734,7 +734,7 @@ class TestSearch:
         response = self.search(http, run, " river ", account)
 
         assert (response.status, response.json()) == (200, matches)
-        assert client.called("search") == [("search", (SEARCH,), {"field": "list_id", "q": "river"})]
+        assert client.called("search") == [("search", (SEARCH,), {"field": "list_id", "q": "river", "row": None})]
 
     def test_asks_nothing_for_too_short_or_too_long(self, http, account, run, client):
         for q, field in (("r", "list_id"), ("r" * 101, "list_id"), ("river", ""), ("river", "f" * 101)):
@@ -1052,3 +1052,144 @@ class TestRunStatusTemplate:
 
         assert kit.run_status_context(invoice, "create_invoice", lambda run: "")["status"] == "failed"
         assert kit.run_status_context(invoice, "create_invoice", lambda run: "", connection=other)["status"] == "not_sent"
+
+
+# -- A rows question --------------------------------------------------------------------------
+
+ITEMS = [
+    {"value": "item_service", "label": "Service"},
+    {"value": "item_inventory", "label": "Inventory part"},
+    {"value": "item_non_inventory", "label": "Non-inventory part"},
+]
+ROWS_QUESTION = {
+    "token": "tok",
+    "message": "QuickBooks doesn't have these records the transaction names.",
+    "choices": [
+        {
+            "id": "proceed",
+            "label": "Create or use these, then add the transaction",
+            "fields": [
+                {
+                    "name": "records", "type": "rows", "label": "Records QuickBooks doesn't have", "required": True,
+                    "columns": [
+                        {"name": "action", "type": "string", "required": True, "label": "What to do",
+                         "enum": [{"value": "create", "label": "Create it"}, {"value": "use", "label": "Use one"}]},
+                        {"name": "list_id", "type": "record", "required": True, "label": "Record to use",
+                         "kind": None, "when": {"action": ["use"]}},
+                        {"name": "item_type", "type": "string", "required": True, "label": "Item type",
+                         "enum": ITEMS, "when": {"action": ["create"]}},
+                        {"name": "income_account", "type": "record", "required": True, "label": "Income account",
+                         "kind": "account", "when": {"action": ["create"]}},
+                        {"name": "asset_account", "type": "record", "required": True, "label": "Asset account",
+                         "kind": "account", "when": {"action": ["create"], "item_type": ["item_inventory"]}},
+                        {"name": "quantity", "type": "number", "required": False, "label": "Quantity"},
+                    ],
+                    "rows": [
+                        {"key": "customer_ref", "label": "Lone Star Supply", "detail": "Customer",
+                         "columns": ["action", "list_id"], "values": {}},
+                        {"key": "invoice_line_add.0.item_ref", "label": "Vinyl Banner", "detail": "Item",
+                         "columns": ["action", "list_id", "item_type", "income_account", "asset_account", "quantity"], "values": {}},
+                        {"key": "invoice_line_add.1.item_ref", "label": "Hardware Kit", "detail": "Item",
+                         "columns": ["action", "list_id", "income_account"], "values": {"item_type": "item_non_inventory"}},
+                    ],
+                },
+                {"name": "terms", "type": "string", "label": "Terms", "enum": [{"value": "net30", "label": "Net 30"}]},
+            ],
+        },
+        {"id": "cancel", "label": "Cancel", "fields": []},
+    ],
+}
+
+
+class TestRowsQuestion:
+    @pytest.fixture
+    def invoice(self, world, account):
+        return world.invoice(account)
+
+    @pytest.fixture
+    def run(self, world, account, invoice):
+        return world.run(invoice, world.connection(account), revision=6, question=ROWS_QUESTION, links={"decisions": DECISIONS, "search": SEARCH})
+
+    def rows(self, shown):
+        """Each body row's key and markup."""
+        body = shown.split("<tbody>", 1)[1].split("</tbody>", 1)[0]
+        return [(html.unescape(key), markup) for key, markup in re.findall(r'<tr data-qube-row="([^"]+)"(.*?)</tr>', body, re.S)]
+
+    def cell(self, row, column):
+        return re.search(r'<td data-qube-col="%s"([^>]*)>(.*?)</td>' % column, row, re.S)
+
+    def test_shows_a_table_a_row_per_record_the_columns_it_asks_and_a_bulk_bar(self, http, account, invoice, run):
+        shown = page(http, invoice, account)
+
+        rows = self.rows(shown)
+        assert [key for key, _ in rows] == ["customer_ref", "invoice_line_add.0.item_ref", "invoice_line_add.1.item_ref"]
+        customer = rows[0][1]
+        assert re.findall(r'<select name="data\[records\]\[customer_ref\]\[action\]"', customer)
+        assert "data[records][customer_ref][item_type]" not in customer
+        search = re.search(r'<div class="qube-search" ([^>]*)>', self.cell(customer, "list_id").group(2)).group(1)
+        assert 'data-qube-field="records.list_id"' in search
+        assert 'data-qube-row="customer_ref"' in search
+        assert 'name="data[records][customer_ref][list_id]"' in customer
+        when = re.search(r"data-qube-when=(['\"])(.*?)\1", self.cell(rows[1][1], "asset_account").group(1)).group(2)
+        assert json.loads(html.unescape(when)) == {"action": ["create"], "item_type": ["item_inventory"]}
+        assert 'name="data[records][invoice_line_add.0.item_ref][quantity]"' in rows[1][1]
+        assert self.cell(rows[2][1], "item_type").group(2).strip() == "Non-inventory part"
+        values = re.search(r"data-qube-values=(['\"])(.*?)\1", rows[2][1]).group(2)
+        assert json.loads(html.unescape(values)) == {"item_type": "item_non_inventory"}
+
+        bulk = shown.split('<tr class="qube-rows-bulk">', 1)[1].split("</tr>", 1)[0]
+        bulked = dict(re.findall(r'<td data-qube-bulk="([^"]+)">(.*?)</td>', bulk, re.S))
+        assert sorted(name for name, cell in bulked.items() if "qube-bulk-apply" in cell) == ["action", "asset_account", "income_account", "item_type"]
+        assert 'data-qube-field="records.income_account"' in bulked["income_account"]
+        assert "data-qube-row" not in bulked["income_account"]
+
+    def test_shows_an_enum_field_as_a_select_and_the_search_script_once(self, http, account, invoice, run):
+        shown = page(http, invoice, account)
+
+        assert re.search(r'<select id="[^"]+" name="data\[terms\]"', shown) or re.search(r'<select name="data\[terms\]"', shown)
+        assert '<option value="net30">Net 30</option>' in shown
+        assert shown.count('querySelectorAll(".qube-search:not([data-qube-ready])")') == 1
+        assert shown.count('querySelectorAll("[data-qube-rows]:not([data-qube-ready])")') == 1
+
+    def test_answers_with_each_rows_filled_asked_columns_by_row_key(self, http, account, invoice, run, client):
+        form = {
+            "choice": "proceed",
+            "data[records][customer_ref][action]": "use",
+            "data[records][customer_ref][list_id]": "80000001-1",
+            "data[records][customer_ref][item_type]": "item_service",
+            "data[records][invoice_line_add.0.item_ref][action]": "create",
+            "data[records][invoice_line_add.0.item_ref][list_id]": "",
+            "data[records][invoice_line_add.0.item_ref][item_type]": "item_inventory",
+            "data[records][invoice_line_add.0.item_ref][income_account]": "8000000A-1",
+            "data[records][invoice_line_add.0.item_ref][asset_account]": " 80000005-1 ",
+            "data[records][invoice_line_add.0.item_ref][quantity]": "2",
+            "data[records][invoice_line_add.1.item_ref][action]": "create",
+            "data[records][invoice_line_add.1.item_ref][income_account]": "8000000A-1",
+            "data[terms]": "net30",
+        }
+
+        response = http.post("/qube/questions/runs/%s" % run.id, form, account=account, headers={"Referer": "/invoices/%s" % invoice.id})
+
+        assert response.status == 303
+        assert client.called("answer") == [
+            ("answer", (DECISIONS,), {"choice": "proceed", "data": {
+                "records": {
+                    "customer_ref": {"action": "use", "list_id": "80000001-1"},
+                    "invoice_line_add.0.item_ref": {"action": "create", "item_type": "item_inventory", "income_account": "8000000A-1",
+                                                    "asset_account": "80000005-1", "quantity": 2},
+                    "invoice_line_add.1.item_ref": {"action": "create", "income_account": "8000000A-1"},
+                },
+                "terms": "net30",
+            }})
+        ]
+
+    def test_searches_a_record_column_for_its_row(self, http, account, run, client):
+        response = http.get("/qube/questions/runs/%s/search" % run.id, {"field": "records.list_id", "q": "lone", "row": "customer_ref"}, account=account)
+
+        assert response.status == 200
+        assert client.called("search") == [("search", (SEARCH,), {"field": "records.list_id", "q": "lone", "row": "customer_ref"})]
+
+    def test_leaves_out_a_row_over_200_characters(self, http, account, run, client):
+        http.get("/qube/questions/runs/%s/search" % run.id, {"field": "records.list_id", "q": "lone", "row": "r" * 201}, account=account)
+
+        assert client.called("search")[0][2]["row"] is None

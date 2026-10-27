@@ -368,6 +368,10 @@ def test_search_appends_after_the_links_query(client, fake):
     assert fake.last["raw_query"].startswith("prompt_token=tok&")
     assert fake.last["query"] == {"prompt_token": ["tok"], "field": ["customer"], "q": ["Ac me"]}
 
+    fake.answer({"json": {"data": []}})
+    client.search(url, field="records.list_id", q="lone", row="invoice_line_add.0.item_ref")
+    assert fake.last["query"] == {"prompt_token": ["tok"], "field": ["records.list_id"], "q": ["lone"], "row": ["invoice_line_add.0.item_ref"]}
+
 
 @pytest.mark.parametrize(
     "url",

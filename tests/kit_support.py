@@ -153,8 +153,8 @@ class FakeClient(object):
     def answer(self, decisions_url, *, choice, data=None):
         return self._call("answer", decisions_url, choice=choice, data=data) or {"state": "running"}
 
-    def search(self, search_url, *, field, q):
-        found = self._call("search", search_url, field=field, q=q)
+    def search(self, search_url, *, field, q, row=None):
+        found = self._call("search", search_url, field=field, q=q, row=row)
         return found if found is not None else [{"value": "80000001-1", "label": "Riverbend Electric", "detail": None}]
 
 

@@ -83,6 +83,8 @@ qube.answer(event.links["decisions"], choice="create", data={"name": "Acme Ltd"}
 
 # A choice whose field is searched: look records up as your user types
 matches = qube.search(event.links["search"], field="customer", q="acm")
+# A rows field's record column: "<field>.<column>", with the row's key
+matches = qube.search(event.links["search"], field="records.list_id", q="acm", row="customer_ref")
 
 qube.get_run(event.links["run"])                  # or qube.get_run(connection_id, run_id)
 qube.cancel_run(event.links["cancel"], reason="customer cancelled the order")
@@ -535,7 +537,7 @@ Relative to where your app mounts them:
 | `POST webhooks/qube/connections/<id>` | A connection's webhooks. |
 | `POST webhooks/qube/requests/<id>` | A plain request's webhooks ([Plain requests](#plain-requests)). |
 | `POST qube/questions/runs/<id>` | Your user's answer to the run's question, from the template: 303 back to the page. Once QuBe Sync takes it, the run is `running` again (its sync status `sending`) until its next webhook, which waits on the Web Connector's next poll. With a message when it didn't go through (the question has changed: a 409, or any 400, from QuBe Sync, and it's forgotten; or QuBe Sync's words for a field it couldn't take, a 422). Behind your sign-in and CSRF. |
-| `GET qube/questions/runs/<id>/search` | A record field's matches, as JSON (`q` of 2 to 100 characters and a `field`, else `[]`). Behind your sign-in. |
+| `GET qube/questions/runs/<id>/search` | A record field's matches, as JSON (`q` of 2 to 100 characters and a `field`, else `[]`; a rows field's `row`, at most 200 characters). Behind your sign-in. |
 | `POST qube/runs/<id>/retry_start` | A start QuBe Sync never confirmed, sent again with the same reference, from the run status template: 303 back, with a message for a run that isn't `starting`. Behind your sign-in and CSRF, and `authorize_question`. |
 | `POST qube/runs/<id>/redeliver` | A run that looks stuck (`run.looks_stuck()`: confirmed, not ended, and quiet for 10 minutes while running or waiting on a question this app never got): asks QuBe Sync to send its latest event again (`redeliver_run`), from the run status template's "Send its latest news again" button. 303 back, with a message when QuBe Sync has nothing to send yet (409), was asked a moment ago (429) or didn't answer, or the run isn't quiet. Behind your sign-in and CSRF, and `authorize_question`. |
 
@@ -889,6 +891,14 @@ FastAPI's), and a record field's box searches through your app, so the API key n
 the browser. For other markup, put your own `qubesync/question.html` or
 `qubesync/run_status.html` where your templates are found first. `question_context` and
 `run_status_context` in each adapter give their context for an `{% include %}`.
+
+A field with a fixed list (`enum`) shows as a select. A rows field (`add_transaction`'s one
+question for every record QuickBooks doesn't have) shows as a table
+(`qubesync/_question_rows.html`): a row per record with the columns it asks, a column shown only
+while its `when` holds, a search per record column (sent with the row), and a "Set selected" bar
+that fills a column on every ticked row. Its inputs are `data[<field>][<row key>][<column>]`, and
+its answer `{"records": {row key: {column: value}}}` (`qubesync.kit.rows_data`). The search
+script is `qubesync/_question_script.html`, rendered once; both scripts carry your CSP nonce.
 
 ### Sync status
 

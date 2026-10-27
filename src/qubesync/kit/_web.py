@@ -61,6 +61,7 @@ __all__ = [
     "choice",
     "answer_data",
     "number",
+    "rows_data",
     "refusal",
     "back",
 ]
@@ -429,7 +430,8 @@ def search(request, run_id, args):
     """GET qube/questions/runs/<id>/search: the matches for a record field, for what your user
     typed: [{value, label, detail}], at most 20, from the question's links.search, which a run
     sets while it asks with one. q of 2 to 100 characters and a field name of at most 100 are
-    asked about; anything else has no matches."""
+    asked about; anything else has no matches. A rows field's search names its row (row, at
+    most 200 characters)."""
     found = authorized_run(request, run_id, "an answer or search")
     if isinstance(found, Reply):
         return Reply(found.status, json=[])
@@ -437,13 +439,14 @@ def search(request, run_id, args):
     links = run.links or {}
     q = str(args.get("q") or "").strip()
     field = str(args.get("field") or "")
+    row = str(args.get("row") or "")  # a rows field's row key, at most 200 characters
     if not links.get("search"):
         return Reply(409, json=[])
     if not _searchable(q, field):
         return Reply(200, json=[])
 
     try:
-        return Reply(200, json=client().search(links["search"], field=field, q=q))
+        return Reply(200, json=client().search(links["search"], field=field, q=q, row=row if 0 < len(row) <= 200 else None))
     except APIError as error:
         if not 400 <= error.status < 500:
             raise
@@ -591,16 +594,37 @@ def answer_data(picked, form):
     # type: (Dict[str, Any], Mapping[str, Any]) -> Dict[str, Any]
     """The choice's own fields from the form (data[<name>]), each as its type: a checkbox True
     or False, a number as a number (or as typed, for QuBe Sync's 422 to name), and a blank one
-    left out."""
+    left out. A rows field is {row key: {column: value}} from data[<name>][<row key>][<column>]."""
     data = {}  # type: Dict[str, Any]
     for field in picked.get("fields") or []:
         name = field["name"]
+        if field.get("type") == "rows":
+            data[name] = rows_data(field, form)
+            continue
         text = str(form.get("data[%s]" % name) or "").strip()
         if field.get("type") == "boolean":
             data[name] = text == "true"
         elif text:
             data[name] = number(text) if field.get("type") == "number" else text
     return data
+
+
+def rows_data(field, form):
+    # type: (Dict[str, Any], Mapping[str, Any]) -> Dict[str, Dict[str, Any]]
+    """A rows field's answer: each row's filled columns of those it asks, by row key. QuBe Sync
+    drops a column the row's other answers say doesn't apply, and names a required one left out."""
+    columns = field.get("columns") or []
+    rows = {}  # type: Dict[str, Dict[str, Any]]
+    for row in field.get("rows") or []:
+        values = {}  # type: Dict[str, Any]
+        for column in columns:
+            if column["name"] not in (row.get("columns") or []):
+                continue
+            text = str(form.get("data[%s][%s][%s]" % (field["name"], row["key"], column["name"])) or "").strip()
+            if text:
+                values[column["name"]] = number(text) if column.get("type") == "number" else text
+        rows[row["key"]] = values
+    return rows
 
 
 def number(text):

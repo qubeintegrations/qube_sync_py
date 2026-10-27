@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Kit: the question template shows a rows field as a table (`qubesync/_question_rows.html`, Django
+  and Jinja): the columns each row asks, a search per record column with its row, "Set selected"
+  for many rows; a fixed list (`enum`) as a select. The search script is one partial,
+  `qubesync/_question_script.html`. A rows field's answer is `{row key: {column: value}}` from
+  `data[<field>][<row key>][<column>]` (`qubesync.kit.rows_data`), and the search route passes
+  `row` on. `Client.search` takes `row=`.
 - Kit: onboarding makes realtime connections (the `connection_type` setting, `"realtime"` by
   default, or `"standard"`): workflows run only on realtime connections. A start QuBe Sync refuses
   as `realtime_required` (`Operation.start`, `run.retry_start()`) marks the run failed and raises

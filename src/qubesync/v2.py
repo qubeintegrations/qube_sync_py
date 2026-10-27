@@ -455,10 +455,13 @@ class Client(OperationsMixin):
         parsed = self._request("POST", decisions_url, _compact(choice=choice, data=data), retry_safe=retry_safe)
         return _unwrap(parsed)
 
-    def search(self, search_url, *, field, q):
-        # type: (str, str, str) -> Any
-        """GET a question's ``links.search`` for one field. Returns the list of matches."""
-        return self._data("GET", search_url, query={"field": field, "q": q})
+    def search(self, search_url, *, field, q, row=None):
+        # type: (str, str, str, Optional[str]) -> Any
+        """GET a question's ``links.search`` for one field. Returns the list of matches.
+
+        For a rows field's record column, ``field`` is ``"<field>.<column>"`` and ``row`` the
+        row's key, whose kind of record it searches."""
+        return self._data("GET", search_url, query=_compact(field=field, q=q, row=row))
 
     # -- Queued requests ---------------------------------------------------------------------
 

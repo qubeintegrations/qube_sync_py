@@ -69,6 +69,7 @@ from ._web import (
     redeliver,
     refusal,
     retry_start,
+    rows_data,
     run_status_context,
     search,
 )
@@ -137,6 +138,7 @@ __all__ = [
     "choice",
     "answer_data",
     "number",
+    "rows_data",
     "refusal",
     "back",
     "back_with_error",
