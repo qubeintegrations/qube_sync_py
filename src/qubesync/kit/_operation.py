@@ -8,7 +8,7 @@ import requests
 
 from ..v2 import APIError
 from ._defaults import client
-from ._errors import NotConnected
+from ._errors import NotConnected, RealtimeRequired
 from ._models import advance_sync_mark
 from ._settings import settings
 from ._store import RUN
@@ -24,6 +24,14 @@ CANCELLED = "workflow_run.cancelled"
 
 # What a call that got no answer raises (a timeout, a refused or dropped connection).
 NETWORK_ERRORS = (requests.ConnectionError, requests.Timeout)
+
+REALTIME_REQUIRED = "Workflows run on realtime connections, and this one is standard."
+
+
+def _detail(error):
+    # type: (APIError) -> Optional[str]
+    detail = error.errors.get("detail") if isinstance(error.errors, dict) else None
+    return detail if isinstance(detail, str) and detail else None
 
 
 def without_nils(value):
@@ -190,6 +198,8 @@ class Operation(object):
         except APIError as error:
             if cls._refused(error):
                 cls._mark_failed(run)
+            if error.code == "realtime_required":
+                raise RealtimeRequired(_detail(error) or REALTIME_REQUIRED) from error
             raise
         return cls._record_start(run, started if isinstance(started, dict) else {})
 

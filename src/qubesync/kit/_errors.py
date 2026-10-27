@@ -9,6 +9,7 @@ __all__ = [
     "NotConfigured",
     "NotReady",
     "NotConnected",
+    "RealtimeRequired",
     "UnknownOperation",
 ]
 
@@ -42,6 +43,11 @@ class MissingReference(QubeSyncError, ValueError):
     customer_ref): the record has no QuickBooks link on the run's connection and no name to look
     it up by. The kit's mapped operations raise it from input, so the start fails, before anything
     is sent, saying which reference and which record."""
+
+
+class RealtimeRequired(QubeSyncError):
+    """QuBe Sync refused a start (422 realtime_required): workflows run on realtime connections,
+    and this one is standard. Its message is QuBe Sync's, saying how to upgrade it."""
 
 
 class UnknownOperation(QubeSyncError, LookupError):

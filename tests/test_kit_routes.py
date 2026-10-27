@@ -89,9 +89,20 @@ class TestConnect:
         assert response.status == 303
         assert response.location == ONBOARDING
         name, args, kwargs = client.called("create_connection")[0]
-        assert kwargs == {"webhook_url": made.webhook_url, "name": "Main file"}
+        assert kwargs == {"webhook_url": made.webhook_url, "name": "Main file", "type": "realtime"}
         assert re.match(r"\Ahttps://app\.example/webhooks/qube/connections/\d+\Z", made.webhook_url)
         assert (made.owner.id, made.qube_id, made.status, made.name) == (account.id, "conn-q-1", "pending", "Main file")
+
+    def test_makes_a_standard_connection_when_the_setting_says_so(self, http, world, account, client):
+        kit.configure(connection_type="standard")
+
+        http.post("/quickbooks/connections", account=account)
+
+        assert client.called("create_connection")[0][2]["type"] == "standard"
+
+    def test_refuses_a_connection_type_it_doesnt_know(self):
+        with pytest.raises(ValueError, match="connection_type"):
+            kit.configure(connection_type="simulated")
 
     def test_makes_a_new_one_when_the_accounts_only_one_is_connected(self, http, world, account, client):
         world.connection(account)

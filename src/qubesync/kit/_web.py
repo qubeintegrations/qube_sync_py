@@ -333,7 +333,9 @@ def _send_to_setup(connection, fresh=False):
         api.update_connection(connection.qube_id, webhook_url=connection.webhook_url)
         made = api.regenerate_onboarding(connection.qube_id)
     else:
-        made = api.create_connection(webhook_url=connection.webhook_url, name=connection.name)
+        made = api.create_connection(
+            webhook_url=connection.webhook_url, name=connection.name, type=settings().connection_type
+        )
         connection.qube_id = made["id"]
         connection._kit_store.save(connection, fields=["qube_id"])
 

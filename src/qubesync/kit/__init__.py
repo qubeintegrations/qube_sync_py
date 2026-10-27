@@ -31,6 +31,7 @@ from ._errors import (
     NotConfigured,
     NotConnected,
     NotReady,
+    RealtimeRequired,
     UnknownOperation,
 )
 from ._job import perform, retry_delay, run
@@ -85,6 +86,7 @@ __all__ = [
     "NotReady",
     "MissingReference",
     "NotConnected",
+    "RealtimeRequired",
     "UnknownOperation",
     # the bases
     "Operation",

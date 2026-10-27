@@ -455,6 +455,7 @@ qubesync.kit.configure(
 | `client` | a `qubesync.Client` to use instead of the one made from `api_key` and `base_url` (tests) | |
 | `production` | `True` where Connect must refuse `simulated=1` (404) | the adapter's guess: Django `not DEBUG`, Flask `not (app.debug or app.testing)`, FastAPI `not app.debug`; `True` elsewhere |
 | `prune_runs_after` | a `datetime.timedelta` of a day or more: `qubesync.kit.prune_runs()` deletes ended runs and requests older than that ([Storage](#storage)) | `None`: kept |
+| `connection_type` | `"realtime"` or `"standard"`: the type onboarding creates connections as. Workflows run only on realtime connections (billed as realtime); anything else raises `ValueError` | `"realtime"` |
 
 A setting your app hasn't written raises `qubesync.kit.NotConfigured`, naming that file, the
 first time it's needed, so nothing silently passes. The environment is read at first use.
@@ -526,7 +527,7 @@ Relative to where your app mounts them:
 
 | Route | What it does |
 | --- | --- |
-| `POST quickbooks/connections` | Connect, for the signed-in account (`current_account`). Sends its newest connection that has never connected (`pending` or `setup_cancelled`) back through setup, so clicking Connect again doesn't pile up connections. Makes a new one (the row, then QuBe Sync's connection with the row's webhook URL, then its `qube_id`, with an optional `name`) when the account has none, or with `new=1`. Redirects (303) to the setup. With `simulated=1`, outside production (the `production` setting), it makes a new connection to a simulated QuickBooks company file instead (`create_connection(type="simulated")`, connected as it's made), and redirects (303) back to the page: for testing with no Windows computer. In production that answers 404. |
+| `POST quickbooks/connections` | Connect, for the signed-in account (`current_account`). Sends its newest connection that has never connected (`pending` or `setup_cancelled`) back through setup, so clicking Connect again doesn't pile up connections. Makes a new one (the row, then QuBe Sync's connection with the row's webhook URL and the `connection_type` setting, `"realtime"` by default since workflows run only on realtime connections, then its `qube_id`, with an optional `name`) when the account has none, or with `new=1`. Redirects (303) to the setup. With `simulated=1`, outside production (the `production` setting), it makes a new connection to a simulated QuickBooks company file instead (`create_connection(type="simulated")`, connected as it's made), and redirects (303) back to the page: for testing with no Windows computer. In production that answers 404. |
 | `POST quickbooks/connections/<id>/onboarding` | One of the signed-in account's connections, back through setup, with its webhook URL brought up to date (or made at QuBe Sync, for a row QuBe Sync never answered). Another account's connection answers 404. |
 | `DELETE quickbooks/connections/<id>` | Disconnects one of the signed-in account's connections: QuBe Sync deletes its connection (already gone counts), then the row goes, with its runs, requests, QuickBooks links and sync marks (`connection.disconnect()`). 303 back; refused, with a message, while a run or request hasn't ended, or when QuBe Sync doesn't answer. Another account's connection answers 404. Behind your sign-in and CSRF. |
 | `POST quickbooks/connections/<id>/disconnect` | The same, for an HTML form, which can't send `DELETE` (Django, Flask and FastAPI have no method override). |
@@ -741,6 +742,9 @@ A start can fail two ways, and they're handled differently:
   that raised: nothing was started. The row is marked `failed` and the error raised; start again.
   A 409 is the exception: the idempotency key is in use by another call still in flight (the
   other click of a double click), whose start may land, so the row stays `starting`.
+  A start on a standard connection is refused (422, code `realtime_required`): workflows run
+  only on realtime connections. The row is marked `failed` and `qubesync.kit.RealtimeRequired`
+  is raised instead of the `APIError`, with QuBe Sync's message saying how to upgrade it.
 - **No answer** (a timeout, a 5xx, a dropped connection): the run may have started. The row stays
   `starting`, with its reference and input, and the error is raised. Send it again with
   `run.retry_start()` (or `CreateInvoice.retry_start(run)`), never with a new `start`: a new

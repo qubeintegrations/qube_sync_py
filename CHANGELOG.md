@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Kit: onboarding makes realtime connections (the `connection_type` setting, `"realtime"` by
+  default, or `"standard"`): workflows run only on realtime connections. A start QuBe Sync refuses
+  as `realtime_required` (`Operation.start`, `run.retry_start()`) marks the run failed and raises
+  `qubesync.kit.RealtimeRequired`, its message saying how to upgrade.
 - Kit: disconnect. `DELETE quickbooks/connections/<id>`, and `POST .../<id>/disconnect` for an HTML
   form (`qubesync.kit.disconnect`; Django `qubesync:connection` and `qubesync:connection_disconnect`,
   Flask `qubesync_connections.connection` and `.connection_disconnect`, FastAPI

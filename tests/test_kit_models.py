@@ -639,6 +639,30 @@ class TestStart:
         row = world.all(world.Run)[-1]
         assert (row.state, row.qube_run_id) == ("failed", None)
 
+    def test_raises_realtime_required_and_marks_the_run_failed_on_a_standard_connection(self, world, invoice, connection, client):
+        client.raises["start_run"] = api_error(422, {"code": "realtime_required", "detail": "Upgrade it to realtime."})
+
+        with pytest.raises(kit.RealtimeRequired, match="Upgrade it to realtime."):
+            CreateInvoice.start(invoice, connection)
+        assert world.all(world.Run)[-1].state == "failed"
+
+    def test_realtime_required_without_a_detail_says_why(self, world, invoice, connection, client):
+        client.raises["start_run"] = api_error(422, {"code": "realtime_required"})
+
+        with pytest.raises(kit.RealtimeRequired, match="realtime connections"):
+            CreateInvoice.start(invoice, connection)
+
+    def test_a_retried_start_refused_for_realtime_raises_realtime_required(self, world, invoice, connection, client):
+        client.raises["start_run"] = timeout()
+        with pytest.raises(requests.Timeout):
+            CreateInvoice.start(invoice, connection)
+        client.raises["start_run"] = api_error(422, {"code": "realtime_required", "detail": "Upgrade it."})
+
+        row = world.all(world.Run)[-1]
+        with pytest.raises(kit.RealtimeRequired, match="Upgrade it."):
+            row.retry_start()
+        assert world.reload(row).state == "failed"
+
     def test_marks_the_run_failed_when_its_input_raises(self, world, invoice, connection, client, monkeypatch):
         def broken(operation):
             raise NotImplementedError("not yet")

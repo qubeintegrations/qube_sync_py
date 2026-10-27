@@ -46,7 +46,10 @@ _DESCRIPTIONS = {
     "client": "a qubesync.Client to use instead of the one made from api_key and base_url",
     "production": "True in production, where Connect refuses simulated=1 (404)",
     "prune_runs_after": "a datetime.timedelta of a day or more: how long ended runs and requests are kept",
+    "connection_type": '"realtime" (workflows run only on those) or "standard": what onboarding creates',
 }
+
+CONNECTION_TYPES = ("realtime", "standard")
 
 # Read from the environment at first use, when configure didn't set them.
 _ENVIRONMENT = {
@@ -138,6 +141,8 @@ class Settings(object):
             return DEFAULT_JOB_ATTEMPTS
         if name == "prune_runs_after":
             return None  # off until set
+        if name == "connection_type":
+            return "realtime"
         if name == "dedupe":
             return self._default_dedupe()
         if name == "authorize_question":
@@ -237,6 +242,11 @@ def _validate(name, value):
             raise TypeError(
                 "qubesync.kit: prune_runs_after is None or a datetime.timedelta of a day or more, in %s" % CONFIG_FILE
             )
+    elif name == "connection_type":
+        if value not in CONNECTION_TYPES:
+            raise ValueError(
+                "qubesync.kit: connection_type is 'realtime' or 'standard', not %r, in %s" % (value, CONFIG_FILE)
+            )
     elif name == "production":
         if not isinstance(value, bool):
             raise TypeError("qubesync.kit: production is True or False, in %s" % CONFIG_FILE)
@@ -298,6 +308,8 @@ def configure(**values):
                         FastAPI: not app.debug); with none, True
     prune_runs_after    a timedelta of a day or more: qubesync.kit.prune_runs() deletes ended
                         runs and requests older than that. Default None: kept
+    connection_type     "realtime" or "standard": the type onboarding creates connections as.
+                        Workflows run only on realtime ones. Default "realtime"
     """
     _SETTINGS.update(**values)
     return _SETTINGS
