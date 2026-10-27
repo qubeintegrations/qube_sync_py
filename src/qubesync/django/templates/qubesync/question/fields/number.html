@@ -1,0 +1,3 @@
+{# A number field: posted as typed, sent as a number. #}{% load qubesync %}
+{% qube_capture as control %}<input type="number" step="any" id="{{ field.dom_id }}" name="{{ field.input_name }}" class="{% if field.cell %}{% qube_classes "input" "qube-input" "qube-rows-input" %}{% else %}{% qube_classes "input" "qube-input" %}{% endif %}"{% if field.required %} required{% endif %}{% if field.disabled %} disabled{% endif %}{% if not field.labelled %} aria-label="{{ field.label }}"{% endif %}{% if field.cell %} data-qube-rows-input{% endif %}>{% endqube_capture %}
+{% include "qubesync/question/field.html" %}

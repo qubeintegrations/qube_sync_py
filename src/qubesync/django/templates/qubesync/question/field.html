@@ -1,0 +1,14 @@
+{# The wrapper every field piece renders its control (control, HTML) in, with the field's label. #}{% load qubesync %}
+{% if field.labelled %}
+{% with "qube-field-"|add:field.type as type_class %}<div class="{% qube_classes "field" "qube-field" type_class %}">{% endwith %}
+  {% if field.type == "boolean" %}
+  {{ control }}
+  <label for="{{ field.dom_id }}" class="{% qube_classes "label" "qube-label" %}">{{ field.label }}</label>
+  {% else %}
+  <label for="{{ field.dom_id }}" class="{% qube_classes "label" "qube-label" %}">{{ field.label }}</label>
+  {{ control }}
+  {% endif %}
+</div>
+{% else %}
+{{ control }}
+{% endif %}

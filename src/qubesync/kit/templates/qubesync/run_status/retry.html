@@ -1,0 +1,7 @@
+{#- A start not confirmed for a minute: posts to retry_url, which sends it again, same reference. -#}
+{% autoescape true %}
+<form class="qube-retry-start-form" method="post" action="{{ run_status.retry_url }}">
+  {% if csrf_token is defined and csrf_token %}<input type="hidden" name="csrf_token" value="{{ csrf_token() if csrf_token is callable else csrf_token }}">{% endif %}
+  <button type="submit" class="{{ qube_classes('button', 'qube-retry-start') }}">{{ qube_t('status.try_again') }}</button>
+</form>
+{% endautoescape %}

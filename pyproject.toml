@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "qubesync"
-version = "0.3.0"
+version = "0.4.0"
 requires-python = ">=3.8"
 dependencies = ["requests"]
 description = "A Python library for QuickBooks Desktop / Enterprise integration via QubeSync API with intuitive DSL for building QBXML requests."
@@ -28,6 +28,18 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 
+# `qubesync workflows`: writes your app's typed workflow starts (qubesync.workflow_types).
+[project.scripts]
+qubesync = "qubesync.workflow_types._cli:main"
+
+# The integration kit's adapters (qubesync.django, qubesync.flask, qubesync.fastapi), each
+# importing its framework only when it's imported: qubesync and qubesync.kit need none.
+[project.optional-dependencies]
+django = ["Django>=3.2"]
+flask = ["Flask>=2.0", "SQLAlchemy>=1.4"]
+fastapi = ["fastapi>=0.95", "jinja2>=3.0", "python-multipart>=0.0.6", "SQLAlchemy>=1.4"]
+test = ["pytest", "httpx"]
+
 [project.urls]
 Homepage = "https://github.com/qubeintegrations/qube_sync_py"
 Documentation = "https://docs.qubesync.com"
@@ -38,8 +50,24 @@ Issues = "https://github.com/qubeintegrations/qube_sync_py/issues"
 where = ["src"]
 
 [tool.setuptools.package-data]
-qubesync = ["py.typed"]
+qubesync = [
+    "py.typed",
+    "kit/templates/qubesync/*.html",
+    "kit/templates/qubesync/question/*.html",
+    "kit/templates/qubesync/question/fields/*.html",
+    "kit/templates/qubesync/question/rows/*.html",
+    "kit/templates/qubesync/run_status/*.html",
+    "kit/templates/qubesync/storyboard/*.html",
+    "kit/storyboard/*.json",
+    "django/templates/qubesync/*.html",
+    "django/templates/qubesync/question/*.html",
+    "django/templates/qubesync/question/fields/*.html",
+    "django/templates/qubesync/question/rows/*.html",
+    "django/templates/qubesync/run_status/*.html",
+    "django/templates/qubesync/storyboard/*.html",
+    "django/static/qubesync/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]

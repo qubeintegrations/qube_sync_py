@@ -1,0 +1,9 @@
+{% comment %}
+The question a run is asking about a record (question, a QuestionView), or nothing when it isn't
+asking: {% load qubesync %}{% qube_question invoice "create_invoice" %}, or include it with
+qubesync.django.question_context(...). It renders the pieces under qubesync/question/; put your
+own copy of any piece at its path in a template directory Django searches first (README,
+"Styling"). Its search boxes and rows field need the behaviour script ({% qube_assets %} in your
+base template).
+{% endcomment %}
+{% if question %}{% include "qubesync/question/question.html" %}{% else %}{% include "qubesync/error.html" with message=error %}{% endif %}

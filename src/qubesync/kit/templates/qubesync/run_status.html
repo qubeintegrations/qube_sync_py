@@ -1,0 +1,6 @@
+{#- Where a record stands with QuickBooks (a RunStatusView, run_status): qube_run_status(invoice,
+    "create_invoice") (connection= for one company file), or include it with run_status_context(...).
+    It renders the pieces under qubesync/run_status/; put your own copy of any at its path. -#}
+{% autoescape true %}
+{% include "qubesync/run_status/status.html" %}
+{% endautoescape %}

@@ -1,0 +1,12 @@
+{#- A route's message (message), shown once. With clear_cookie (qubesync.fastapi without
+    sessions), the browser forgets it once it's shown: the one inline script, with csp_nonce. -#}
+{% autoescape true %}
+{% if message %}
+<p class="{{ qube_classes('error', 'qube-error') }}" role="alert">{{ message }}</p>
+{% if clear_cookie %}
+<script{% if csp_nonce is defined and csp_nonce %} nonce="{{ csp_nonce }}"{% endif %}>
+document.cookie = "{{ clear_cookie }}=; Max-Age=0; Path=/; SameSite=Lax";
+</script>
+{% endif %}
+{% endif %}
+{% endautoescape %}

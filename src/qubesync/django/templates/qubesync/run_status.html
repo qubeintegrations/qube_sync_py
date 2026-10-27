@@ -1,0 +1,6 @@
+{% comment %}
+Where a record stands with QuickBooks (run_status, a RunStatusView): {% qube_run_status invoice
+"create_invoice" %} (connection=... for one company file), or include it with
+qubesync.django.run_status_context(...). It renders the pieces under qubesync/run_status/.
+{% endcomment %}
+{% include "qubesync/run_status/status.html" %}

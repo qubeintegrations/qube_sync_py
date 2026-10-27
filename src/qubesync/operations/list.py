@@ -12,9 +12,9 @@ class _ListDeleteParamsRequired(TypedDict):
     #: The type of list from which a list member is being deleted.
     list_del_type: Literal["Account", "BillingRate", "Class", "Currency", "Customer", "CustomerMsg", "CustomerType", "DateDrivenTerms", "Employee", "InventorySite", "ItemDiscount", "ItemFixedAsset", "ItemGroup", "ItemInventory", "ItemInventoryAssembly", "ItemNonInventory", "ItemOtherCharge", "ItemPayment", "ItemSalesTax", "ItemSalesTaxGroup", "ItemService", "ItemSubtotal", "JobType", "OtherName", "PaymentMethod", "PayrollItemNonWage", "PayrollItemWage", "PriceLevel", "SalesRep", "SalesTaxCode", "ShipMethod", "StandardTerms", "ToDo", "UnitOfMeasureSet", "Vehicle", "Vendor", "VendorType", "WorkersCompCode"]
     #: `list_id` and FullName both identify a list object. QuickBooks assigns `list_id` when the
-    #: object is created. `list_id` values are unique within a list type, not globally across
-    #: all lists. If both FullName and `list_id` are supplied in a request, QuickBooks uses
-    #: `list_id` and ignores FullName.
+    #: object is created. `list_id` values are unique within a list family, not across the
+    #: company file: customers, vendors, employees and other names share one sequence, every
+    #: item type shares another, and each other list has its own.
     list_id: str
 
 

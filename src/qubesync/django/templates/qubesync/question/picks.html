@@ -1,0 +1,4 @@
+{# The question's picks (question.picks): option rows, one form each. #}{% load qubesync %}
+<div class="{% qube_classes "picks" "qube-picks" %}" role="list">
+  {% for choice in question.picks %}{% include "qubesync/question/pick.html" %}{% endfor %}
+</div>

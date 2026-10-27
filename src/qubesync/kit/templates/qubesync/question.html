@@ -1,0 +1,13 @@
+{#- The question a run is asking about a record (a QuestionView, question), or nothing when it
+    isn't asking: qube_question(invoice, "create_invoice") (qubesync.flask; qubesync.fastapi's
+    takes the request first), or {% include "qubesync/question.html" %} with question_context(...).
+    It renders the pieces under qubesync/question/; put your own copy of any piece at its path in
+    your templates to replace it (README, "Styling"). Its search boxes and rows field need the
+    behaviour script (qube_assets() in your layout). A csrf_token in the context goes in each form. -#}
+{% autoescape true %}
+{% if question %}
+{% include "qubesync/question/question.html" %}
+{% else %}
+{% with message=error %}{% include "qubesync/error.html" %}{% endwith %}
+{% endif %}
+{% endautoescape %}

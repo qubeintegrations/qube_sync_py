@@ -47,9 +47,9 @@ class ItemSitesQueryParams(TypedDict, total=False):
     #: in one answer).
     iterator: bool
     #: `list_id` and `full_name` both identify a list object. QuickBooks assigns `list_id` when
-    #: the object is created. `list_id` values are unique within a list type, not globally
-    #: across all lists. If both `full_name` and `list_id` are supplied in a request, QuickBooks
-    #: uses `list_id` and ignores `full_name`.
+    #: the object is created. `list_id` values are unique within a list family, not across the
+    #: company file: customers, vendors, employees and other names share one sequence, every
+    #: item type shares another, and each other list has its own.
     #:
     #: Choose at most one of: `list_id`, or the set (`item_site_filter`, `item_type_filter`).
     #: Members of a set combine with each other, not with the other choices.

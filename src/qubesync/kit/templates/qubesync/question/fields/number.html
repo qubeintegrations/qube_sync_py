@@ -1,0 +1,5 @@
+{#- A number field: posted as typed, sent as a number. -#}
+{% autoescape true %}
+{% set control %}<input type="number" step="any" id="{{ field.dom_id }}" name="{{ field.input_name }}" class="{{ qube_classes('input', 'qube-input', 'qube-rows-input' if field.cell else none) }}"{% if field.required %} required{% endif %}{% if field.disabled %} disabled{% endif %}{% if not field.labelled %} aria-label="{{ field.label }}"{% endif %}{% if field.cell %} data-qube-rows-input{% endif %}>{% endset %}
+{% include "qubesync/question/field.html" %}
+{% endautoescape %}

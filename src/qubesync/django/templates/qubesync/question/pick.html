@@ -1,0 +1,13 @@
+{# One pick (choice, a ChoiceView of kind "pick"): an option row, a form posting choice=<id>. #}{% load qubesync %}
+<form class="qube-choice qube-pick-form" method="post" action="{{ choice.action_url }}" role="listitem" data-qube-choice="{{ choice.id }}" data-qube-choice-kind="pick">
+  {% csrf_token %}
+  <input type="hidden" name="choice" value="{{ choice.id }}">
+  <button type="submit" class="{% qube_classes "pick" "qube-pick" %}">
+    <span class="qube-pick-text">
+      <span class="qube-pick-label">{{ choice.label }}</span>
+      {% if choice.detail %}<span class="{% qube_classes "pick_detail" "qube-pick-detail" %}">{{ choice.detail }}</span>{% endif %}
+      {% if choice.description %}<span class="qube-pick-description">{{ choice.description }}</span>{% endif %}
+    </span>
+    <span class="{% qube_classes "pick_action" "qube-pick-action" %}">{% qube_t "question.use_pick" %}</span>
+  </button>
+</form>

@@ -1,0 +1,13 @@
+{# One record of a rows field (row, a RowView, of rows, a RowsView): its name, its segmented choice, then the fields its answers so far call for. #}{% load qubesync %}
+<div class="{% qube_classes "row" "qube-row" %}" role="listitem" aria-labelledby="{{ row.header_id }}" data-qube-row="{{ row.key }}" data-qube-values="{{ row.values_json }}">
+  <div class="{% qube_classes "row_header" "qube-row-header" %}" id="{{ row.header_id }}">
+    <span class="qube-row-label">{{ row.label }}</span>
+    {% if row.detail %}<span class="qube-row-detail">{{ row.detail }}</span>{% endif %}
+  </div>
+  <div class="qube-row-body">
+    {% for cell in row.segmented_cells %}{% include "qubesync/question/rows/cell.html" %}{% endfor %}
+    <div class="{% qube_classes "row_fields" "qube-row-fields" %}">
+      {% for cell in row.field_cells %}{% include "qubesync/question/rows/cell.html" %}{% endfor %}
+    </div>
+  </div>
+</div>

@@ -10,7 +10,8 @@ generated: re-running writes the same bytes, and --check also fails on a file th
 wouldn't write.
 
 It writes:
-- __init__.py: the index (operation id -> method, path, params_in, paged, entity), and a module
+- __init__.py: the index (operation id -> method, path, params_in, paged, entity), DIGEST (the
+  manifest's sha256, as a workflow types document's operations_digest names it), and a module
   __getattr__ that imports an entity's module on first use.
 - _accessors.py: OperationsMixin, the Client's entity properties (client.customer...), which
   import an entity's module when first used.
@@ -18,11 +19,14 @@ It writes:
   descriptions aside, become one type).
 - <entity>.py: the entity's class (Customer, with create/query/update...), its own nested
   TypedDicts and each operation's params TypedDict.
+- _fields.py: each operation's params TypedDict name and top-level fields (type, required), and
+  the module each type is in, for qubesync.workflow_types (only it imports it).
 
 Standard library only; Python 3.8+.
 """
 
 import argparse
+import hashlib
 import json
 import keyword
 import os
@@ -117,7 +121,8 @@ def convert(schema):
 
 
 class Model:
-    def __init__(self, manifest):
+    def __init__(self, manifest, digest):
+        self.digest = digest
         self.ops = sorted(manifest["operations"], key=lambda o: o["id"])
         self.entities = OrderedDict()
         for op in self.ops:
@@ -436,6 +441,10 @@ class Renderer:
             "import importlib",
             "from typing import Any, Dict, NamedTuple, Tuple",
             "",
+            "# The digest of the operations.json these were generated from. A workflow types document",
+            "# names the one its ``$operation`` ids refer to (``operations_digest``).",
+            "DIGEST = %s" % json.dumps(model.digest),
+            "",
             "",
             "class Operation(NamedTuple):",
             "    method: str",
@@ -482,6 +491,52 @@ class Renderer:
         lines.append('    return sorted(set(globals()) | _MODULES)')
         return "\n".join(lines) + "\n"
 
+    def fields_module(self):
+        """Each operation's params name and top-level fields, as the types its module writes:
+        qubesync.workflow_types writes a body with some required fields made optional (a field
+        a workflow sets itself) as a TypedDict of its own, which a subclass can't express."""
+        model = self.model
+        lines = [
+            HEADER.rstrip("\n"),
+            '"""Each operation\'s params, for ``qubesync.workflow_types`` (only it imports this).',
+            "",
+            "``PARAMS`` maps an operation id to its params TypedDict's name, ``FIELDS`` to its top-level",
+            "fields (``{field: (type, required)}``, the type as the params TypedDict writes it), and",
+            "``MODULES`` each of those names, and every nested type a field names, to the module of",
+            "``qubesync.operations`` it's in.",
+            '"""',
+            "",
+            "from typing import Dict, Tuple",
+            "",
+            "PARAMS = {",
+        ]
+        for op in model.ops:
+            lines.append("    %s: %s," % (json.dumps(op["id"]), json.dumps(model.params[op["id"]][0])))
+        lines.append("}  # type: Dict[str, str]")
+        lines.append("")
+        lines.append("FIELDS = {")
+        for op in model.ops:
+            obj = model.params[op["id"]][1]
+            if not obj or not obj.fields:
+                lines.append("    %s: {}," % json.dumps(op["id"]))
+                continue
+            lines.append("    %s: {" % json.dumps(op["id"]))
+            for field, ref, required, _ in obj.fields:
+                lines.append("        %s: (%s, %s)," % (json.dumps(field), json.dumps(self.type_str(ref, set())), required))
+            lines.append("    },")
+        lines.append("}  # type: Dict[str, Dict[str, Tuple[str, bool]]]")
+        lines.append("")
+        modules = {}
+        for op in model.ops:
+            modules[model.params[op["id"]][0]] = accessor(op["entity"])
+        for key in model.structs:
+            modules[model.struct_names[key]] = model.module_of(key)
+        lines.append("MODULES = {")
+        for name in sorted(modules):
+            lines.append("    %s: %s," % (json.dumps(name), json.dumps(modules[name])))
+        lines.append("}  # type: Dict[str, str]")
+        return "\n".join(lines) + "\n"
+
     def accessors_module(self):
         model = self.model
         lines = [
@@ -524,13 +579,20 @@ class Renderer:
         return "\n".join(lines) + "\n"
 
 
-def render_all(manifest):
-    model = Model(manifest)
+def digest(data):
+    """The manifest's digest as QuBe Sync gives it (``operations_digest`` in GET
+    /workflows/types): of its bytes, as served."""
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def render_all(manifest, digest):
+    model = Model(manifest, digest)
     r = Renderer(model)
     files = OrderedDict()
     files["__init__.py"] = r.index_module()
     files["_accessors.py"] = r.accessors_module()
     files["_types.py"], shared = r.types_module()
+    files["_fields.py"] = r.fields_module()
     for entity, ops in model.entities.items():
         files[accessor(entity) + ".py"] = r.entity_module(entity, ops)
     stats = {"entities": len(model.entities), "shared_types": shared, "types": len(model.structs), "operations": len(model.ops)}
@@ -541,11 +603,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--check", action="store_true", help="write nothing; exit 1 when a file is stale or extra")
     args = parser.parse_args(argv)
-    with open(MANIFEST, encoding="utf-8") as f:
-        manifest = json.load(f)
+    with open(MANIFEST, "rb") as f:
+        data = f.read()
+    manifest = json.loads(data.decode("utf-8"))
     if manifest.get("version") != 1:
         raise SystemExit("operations.json version %r: this generator knows version 1" % manifest.get("version"))
-    files, stats = render_all(manifest)
+    files, stats = render_all(manifest, digest(data))
     existing = set()
     if os.path.isdir(OUT_DIR):
         existing = {n for n in os.listdir(OUT_DIR) if os.path.isfile(os.path.join(OUT_DIR, n)) and n != "py.typed"}

@@ -136,7 +136,7 @@ def test_exports():
     assert qubesync.Client is Client
     assert issubclass(APIError, QubeSyncError)
     assert "Client" in qubesync.__all__ and "APIError" in qubesync.__all__
-    assert qubesync.__version__ == "0.3.0"
+    assert qubesync.__version__ == "0.4.0"
 
 
 @pytest.mark.parametrize("key", [None, "", "   "])
@@ -170,7 +170,7 @@ def test_basic_auth_and_headers(client, fake):
     expected = "Basic " + base64.b64encode((API_KEY + ":").encode()).decode()
     assert req["headers"]["authorization"] == expected
     assert req["headers"]["accept"] == "application/json"
-    assert req["headers"]["user-agent"] == "qubesync-python/0.3.0"
+    assert req["headers"]["user-agent"] == "qubesync-python/0.4.0"
     assert "content-type" not in req["headers"]
     assert "idempotency-key" not in req["headers"]
 
@@ -188,6 +188,11 @@ def test_post_sends_json(client, fake):
 def test_create_connection_omits_nil_name(client, fake):
     client.create_connection(webhook_url="https://app.test/hook")
     assert body_of(fake.last) == {"webhook_url": "https://app.test/hook"}
+
+
+def test_create_connection_sends_type_for_a_simulated_connection(client, fake):
+    client.create_connection(webhook_url="https://app.test/hook", type="simulated")
+    assert body_of(fake.last) == {"webhook_url": "https://app.test/hook", "type": "simulated"}
 
 
 # -- Connections ---------------------------------------------------------------------------
@@ -259,6 +264,37 @@ def test_start_run_is_retried_with_its_reference(client, fake, sleeps):
     assert len(sleeps) == 1
 
 
+def test_workflow_types(client, fake):
+    document = {"digest": "sha256:" + "a" * 64, "operations_digest": "sha256:" + "b" * 64, "workflows": {}}
+    fake.answer({"status": 200, "json": {"data": document}, "headers": {"ETag": '"%s"' % document["digest"]}})
+    assert client.workflow_types() == document
+    req = fake.last
+    assert (req["method"], req["path"], req["raw_query"]) == ("GET", "/api/v2/workflows/types", "")
+    assert "if-none-match" not in req["headers"]
+
+
+def test_workflow_types_with_drafts_and_an_etag(client, fake):
+    from qubesync.v2 import NOT_MODIFIED
+
+    fake.answer({"status": 304, "text": ""})
+    assert client.workflow_types(include_drafts=True, etag="sha256:" + "a" * 64) is NOT_MODIFIED
+    req = fake.last
+    assert req["raw_query"] == "include=drafts"
+    assert req["headers"]["if-none-match"] == '"sha256:%s"' % ("a" * 64)
+
+    fake.answer({"status": 304, "text": ""})
+    client.workflow_types(etag='W/"x"')
+    assert fake.last["headers"]["if-none-match"] == 'W/"x"'
+    assert repr(NOT_MODIFIED) == "NOT_MODIFIED"
+
+
+def test_workflow_types_raises_a_refusal(client, fake):
+    fake.answer({"status": 401, "json": {"errors": "invalid API key"}})
+    with pytest.raises(APIError) as info:
+        client.workflow_types()
+    assert info.value.status == 401
+
+
 def test_get_run_by_link_or_ids(client, fake):
     client.get_run(fake.base_url + "/api/v2/connections/c1/workflow-runs/r1?x=1")
     assert fake.last["path"] == "/api/v2/connections/c1/workflow-runs/r1"
@@ -282,6 +318,22 @@ def test_cancel_run(client, fake):
     assert body_of(fake.last) == {}
     client.cancel_run(url, reason="customer asked")
     assert body_of(fake.last) == {"reason": "customer asked"}
+
+
+def test_redeliver_run_posts_to_the_runs_redeliver_route(client, fake):
+    sent = {"run_id": "r1", "event": "workflow_run.completed", "revision": 7, "webhook_url": "https://app.test/r/1"}
+    fake.answer({"status": 202, "json": {"data": sent}})
+    assert client.redeliver_run("c1", "r 1") == sent
+    assert (fake.last["method"], fake.last["path"]) == ("POST", "/api/v2/connections/c1/workflow-runs/r%201/redeliver")
+
+
+@pytest.mark.parametrize("status", [409, 429])
+def test_redeliver_run_refusals_raise_and_are_not_retried(client, fake, sleeps, status):
+    fake.answer({"status": status, "json": {"errors": {"code": "nothing_to_redeliver"}}})
+    with pytest.raises(APIError) as info:
+        client.redeliver_run("c1", "r1")
+    assert info.value.status == status
+    assert len(fake.requests) == 1
 
 
 def test_run_events_returns_the_whole_body(client, fake):
@@ -315,6 +367,10 @@ def test_search_appends_after_the_links_query(client, fake):
     assert fake.last["method"] == "GET"
     assert fake.last["raw_query"].startswith("prompt_token=tok&")
     assert fake.last["query"] == {"prompt_token": ["tok"], "field": ["customer"], "q": ["Ac me"]}
+
+    fake.answer({"json": {"data": []}})
+    client.search(url, field="records.list_id", q="lone", row="invoice_line_add.0.item_ref")
+    assert fake.last["query"] == {"prompt_token": ["tok"], "field": ["records.list_id"], "q": ["lone"], "row": ["invoice_line_add.0.item_ref"]}
 
 
 @pytest.mark.parametrize(

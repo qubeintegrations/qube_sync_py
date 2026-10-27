@@ -1,0 +1,8 @@
+{#- A fixed list (field.options, each value and label), with a blank first. -#}
+{% autoescape true %}
+{% set control %}<select id="{{ field.dom_id }}" name="{{ field.input_name }}" class="{{ qube_classes('select', 'qube-select', 'qube-rows-input' if field.cell else none) }}"{% if field.required %} required{% endif %}{% if field.disabled %} disabled{% endif %}{% if not field.labelled %} aria-label="{{ field.label }}"{% endif %}{% if field.cell %} data-qube-rows-input{% endif %}>
+  <option value=""></option>
+  {% for option in field.options %}<option value="{{ option.value }}">{{ option.label }}</option>{% endfor %}
+</select>{% endset %}
+{% include "qubesync/question/field.html" %}
+{% endautoescape %}

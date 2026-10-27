@@ -1,0 +1,15 @@
+{% load qubesync %}{% comment %}
+The storyboard's own page, when the storyboard_layout setting names none.
+{% endcomment %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>QuickBooks screens</title>
+  {% qube_assets stylesheet=True %}
+</head>
+<body>
+{% block content %}{% endblock %}
+</body>
+</html>
