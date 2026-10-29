@@ -190,6 +190,9 @@ def test_missing_keys_read_as_none(event, type_name):
         value = getattr(parsed, name)
         if name in ("type", "event", "dedupe_key", "page_request_id"):
             continue
+        if name in ("perhaps_applied", "response_xml_omitted"):
+            assert value is False, name
+            continue
         assert value is None, name
     assert parsed.get("nothing") is None
     if type_name == "request":
@@ -256,3 +259,41 @@ def test_the_module_needs_only_the_standard_library():
         elif isinstance(node, ast.ImportFrom) and node.level == 0:
             imported.add(node.module.split(".")[0])
     assert imported <= {"datetime", "hashlib", "hmac", "json", "re", "time", "typing"}
+
+
+def _request(state, error_type=None):
+    body = {"id": "q1", "page_request_id": "q1", "state": state}
+    if error_type:
+        body["error"] = {"error_type": error_type, "user_message": "Check QuickBooks."}
+    return webhooks.parse(body)
+
+
+def test_perhaps_applied_for_timed_out_and_outcome_unknown():
+    assert _request("timed_out", "timed_out").perhaps_applied
+    assert _request("timed_out").perhaps_applied
+    assert _request("error", "outcome_unknown").perhaps_applied
+    assert _request("error", "outcome_unknown").error_type == "outcome_unknown"
+
+
+def test_perhaps_applied_is_false_for_other_errors_and_answers():
+    assert not _request("error", "unexpected_error").perhaps_applied
+    assert not _request("retryable", "retryable").perhaps_applied
+    assert not _request("response_received").perhaps_applied
+    assert _request("response_received").error_type is None
+    assert webhooks.parse({"page_request_id": "q1", "error": "text"}).error_type is None
+
+
+def test_an_answer_over_1_mb_comes_without_response_xml():
+    case = next(c for c in EVENTS if c["name"].startswith("request: an answer too large"))
+    event = webhooks.verify(case["body"], case["header"], [SECRETS[0]], now=T)
+    assert event.response_xml_omitted is True
+    assert event.response_xml is None
+    assert event.self_link.endswith("/queued-requests/" + event.id)
+    assert event.response_json["status"] == "success"
+
+
+def test_an_inline_answer_has_no_self_link():
+    event = webhooks.parse({"page_request_id": "q1", "state": "response_received", "response_xml": "<QBXML/>"})
+    assert not event.response_xml_omitted
+    assert event.response_xml == "<QBXML/>"
+    assert event.self_link is None

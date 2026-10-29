@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `RequestEvent.perhaps_applied`: true for a `timed_out` request and for an `error` with
+  `error_type` `outcome_unknown`, QuBe Sync's type for a write the Web Connector reported an error
+  on mid-request. QuickBooks may have applied either, so look before sending a write again.
+  `RequestEvent.error_type` reads `error["error_type"]`.
+- A request webhook whose body would be over 1 MB comes with `response_xml` None,
+  `response_xml_omitted` true and `links.self`. `RequestEvent.response_xml`, `.response_xml_omitted`,
+  `.links` and `.self_link` read them, and `Client.response_xml_for(event)` returns the event's
+  `response_xml`, fetching it from `links.self` when it was omitted.
+- `Client.get_request(link)` takes a request's URL (such as `links.self`), as `get_run` does.
+  `get_request(connection_id, id)` works as before.
+
 ## [0.4.0] - 2026-10-27
 
 Adds the integration kit (`qubesync.kit`, with Django, Flask and FastAPI adapters), typed
