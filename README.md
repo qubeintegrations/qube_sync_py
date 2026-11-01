@@ -299,8 +299,9 @@ def handle(raw_body, signature_header):
     if event.type == "request":
         # One page of a request's answer, in one state.
         save_page(event.page_request_id, event.page, event.response_json, event.error)
-        # event.perhaps_applied: QuickBooks may have saved a write that timed out or ended
-        # outcome_unknown, so look before sending it again.
+        # event.perhaps_applied: timed_out, outcome_unknown or response_too_large. QuickBooks may
+        # have applied it: query the record before sending a write again. A query is safe to
+        # resend; page a response_too_large one (iterator, smaller max_returned) or narrow it.
         # event.response_xml_omitted: over 1 MB; client.response_xml_for(event) fetches it.
     elif event.type == "workflow_run":
         run = find_run(event.reference)
@@ -346,9 +347,12 @@ def handle(raw_body, signature_header):
 | `unknown` | anything else | `body`, `get(key)` | `None` |
 
 A request event is `perhaps_applied` when it `timed_out`, or ended in an `error` whose `error_type`
-is `outcome_unknown` (the Web Connector reported an error mid-write). QuickBooks may have saved it,
-so look before you send a create or an update again; a query is safe to resend. Other errors, such
-as a read's `unexpected_error`, are not.
+is `outcome_unknown` (the Web Connector reported an error mid-write) or `response_too_large`
+(QuickBooks ran it, but its answer was too big to keep). QuickBooks may have saved it, so look
+before you send a create or an update again. A query is safe to resend; page a
+`response_too_large` one (`iterator` and a smaller `max_returned`), or narrow it when QuickBooks
+doesn't page it. Other errors, such as `quickbooks_business_error`, `xml_error` or a read's
+`unexpected_error`, are not, and neither is a `discarded` request.
 
 A request event whose body would be over 1 MB comes with `response_xml` `None`,
 `response_xml_omitted` true and `self_link` (its `links.self`). `response_json` always comes.
@@ -837,7 +841,7 @@ class FindCustomer(qubesync.kit.Request):
     def done(self):
         pass
 
-    # error or discarded: show event.error["user_message"].
+    # error or discarded: show event.error["user_message"]. Never one QuickBooks may have applied.
     def failed(self, event):
         pass
 
@@ -845,8 +849,9 @@ class FindCustomer(qubesync.kit.Request):
     def retrying(self, event):
         pass
 
-    # The answer never came back: QuickBooks may have applied it. Default: failed(event). A query
-    # can be queued again; check a write before resending it.
+    # QuickBooks may have applied it (event.perhaps_applied): timed_out, or an error whose
+    # error_type is outcome_unknown or response_too_large. Default: failed(event). Check
+    # QuickBooks before sending a write again; a query can be queued again (page a too-large one).
     def timed_out(self, event):
         pass
 ```
@@ -874,6 +879,14 @@ logged (request webhooks carry no connection id; before the queue's answer is sa
 event's `id` is kept). Pages can come in any order: `done` is called once, when every page from 1
 to the one whose `iteration_state` is `done` is in (`not_applicable` is one page). A `retryable`
 isn't final, and one that arrives after its page's answer is skipped.
+
+`timed_out(event)` gets every final event QuickBooks may have applied though no answer says so
+(`event.perhaps_applied`): state `timed_out`, or state `error` with `error_type`
+`outcome_unknown` (the Web Connector reported an error mid-write) or `response_too_large`
+(QuickBooks ran it, but its answer was too big to keep). The row's `state` stays what QuBe Sync
+sent (`timed_out` or `error`). Look in QuickBooks before sending a write again. A query is safe to
+queue again; page a `response_too_large` one (`iterator` and a smaller `max_returned`), or narrow
+it. `failed(event)` gets the rest: other errors and `discarded`.
 
 A `QueuedRequest` keeps `operation`, `record`, `connection`, `reference`, `qube_id`, `params`,
 `state` (`queued`, `retryable`, `response_received`, `error`, `timed_out`, `discarded`, or

@@ -52,6 +52,18 @@ def page(number, iteration_state, state="response_received"):
     return {"page": number, "page_request_id": "pr-%s" % number, "iteration_state": iteration_state, "state": state}
 
 
+def record_timed_out(monkeypatch):
+    def timed_out(self, event):
+        FindCustomer.calls.append(("timed_out", event.error_type))
+        kit.Request.timed_out(self, event)  # its default: failed(event)
+
+    monkeypatch.setattr(FindCustomer, "timed_out", timed_out, raising=False)
+
+
+def refused_with(error_type):
+    return dict(json.loads(vector_body("request: QuickBooks refused it"))["error"], error_type=error_type)
+
+
 def days_ago(world, days):
     return world.Run._kit_store.now() - datetime.timedelta(days=days)
 
@@ -199,6 +211,34 @@ class TestRequestJob:
 
         assert FindCustomer.calls == [("failed", "timed_out")]
         assert row.state == "timed_out" and row.ended()
+
+    @pytest.mark.parametrize("error_type", ["outcome_unknown", "response_too_large"])
+    def test_hands_an_error_quickbooks_may_have_applied_to_timed_out(self, world, row, monkeypatch, error_type):
+        record_timed_out(monkeypatch)
+
+        row = deliver(world, row, "request: QuickBooks refused it", {"error": refused_with(error_type)})
+
+        assert FindCustomer.calls == [("timed_out", error_type), ("failed", "error")]
+        assert row.state == "error" and row.ended()
+
+    def test_hands_a_timed_out_to_timed_out(self, world, row, monkeypatch):
+        record_timed_out(monkeypatch)
+
+        deliver(world, row, "request: an answer that never came back")
+
+        assert FindCustomer.calls == [("timed_out", "timed_out"), ("failed", "timed_out")]
+
+    def test_hands_a_quickbooks_business_error_and_a_discarded_to_failed_only(self, world, row, customer, connection, monkeypatch):
+        record_timed_out(monkeypatch)
+
+        deliver(world, row, "request: QuickBooks refused it")
+        assert FindCustomer.calls == [("failed", "error")]
+
+        discarded = world.request(customer, connection)
+        changes = {"state": "discarded", "error": refused_with("discarded")}
+        discarded = deliver(world, discarded, "request: QuickBooks refused it", changes)
+        assert FindCustomer.calls == [("failed", "error"), ("failed", "discarded")]
+        assert discarded.state == "discarded"
 
     def test_skips_an_event_whose_id_isnt_the_rows(self, world, row, caplog):
         row = deliver(world, row, "request: an answer", {"id": "someone-elses"})

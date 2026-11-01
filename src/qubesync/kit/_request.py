@@ -189,7 +189,8 @@ class Request(object):
 
     def failed(self, event):
         # type: (Any) -> None
-        """error or discarded: event.error["user_message"] is safe to show."""
+        """error or discarded: event.error["user_message"] is safe to show. Never one QuickBooks
+        may have applied (event.perhaps_applied): those go to timed_out."""
         self.log_event(event)
 
     def retrying(self, event):
@@ -200,8 +201,9 @@ class Request(object):
 
     def timed_out(self, event):
         # type: (Any) -> None
-        """The answer never came back: QuickBooks may have applied it. A query can be queued
-        again; check a write first. Default: failed(event)."""
+        """QuickBooks may have applied it (timed_out, outcome_unknown, response_too_large): check
+        QuickBooks before sending a write again. A query can be queued again; page a too-large
+        one. Default: failed(event)."""
         self.failed(event)
 
     def handle(self, event):
@@ -327,7 +329,7 @@ class Request(object):
             row.state = event.state
             row.error = event.error
             row.ended_at = row._kit_store.now()
-        if event.state == "timed_out":
+        if event.perhaps_applied:
             self.timed_out(event)
         else:
             self.failed(event)
