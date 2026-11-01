@@ -24,7 +24,7 @@ import hmac
 import json
 import re
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from .errors import QubeSyncError
 
@@ -485,6 +485,20 @@ class WorkflowRunError(object):
         if isinstance(key, str) and key in _ERROR_FIELDS:
             return getattr(self, key)
         return None
+
+    def __iter__(self):
+        # type: () -> Iterator[str]
+        """The five field names, in wire order, as iterating the dict gave."""
+        return iter(_ERROR_FIELDS)
+
+    def __contains__(self, key):
+        # type: (Any) -> bool
+        return isinstance(key, str) and key in _ERROR_FIELDS
+
+    def keys(self):
+        # type: () -> Tuple[str, ...]
+        """The five field names, so ``dict(error)`` works."""
+        return _ERROR_FIELDS
 
     def __str__(self):
         # type: () -> str

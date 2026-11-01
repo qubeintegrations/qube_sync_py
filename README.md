@@ -364,7 +364,8 @@ A failed run's `error` is a `webhooks.WorkflowRunError`, a frozen dataclass with
 (QuickBooks' status code, such as 3100), `type` (a stable name to branch on, such as
 `name_in_use`), `message` (safe to show), `quickbooks_message` and `hint`; all but `message` may
 be `None`. `str(error)` is the message, `error["message"]` reads a field by name as the dict
-did (any other key gives `None`), and `error.to_dict()` (or `dataclasses.asdict(error)`)
+did (any other key gives `None`), iterating gives the field names, like the dict did (so
+`"hint" in error` and `dict(error)` work), and `error.to_dict()` (or `dataclasses.asdict(error)`)
 gives the five keys, for storing it as JSON. An error from an older server, a str, reads as one
 with only `message`; `event.get("error")` is the raw value. `error` is `None` when there's none.
 

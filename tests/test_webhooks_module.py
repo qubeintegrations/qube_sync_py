@@ -4,6 +4,7 @@ import ast
 import dataclasses
 import datetime
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -326,6 +327,24 @@ def test_a_workflow_run_error_reads_a_field_by_name():
     assert error[0] is None
     assert error[None] is None
     assert _failed("Riverbend failed").error["message"] == "Riverbend failed"
+
+
+def test_a_workflow_run_error_iterates_like_the_dict():
+    error = _failed({"code": 3100, "type": "name_in_use", "message": "In use."}).error
+    results = []
+    # Without __iter__, `in` and list() fall back to error[0], error[1], ... and never end.
+    worker = threading.Thread(
+        target=lambda: results.append((list(error), "message" in error, "x" in error, 0 in error, dict(error))),
+        daemon=True,
+    )
+    worker.start()
+    worker.join(5)
+    assert results, "iterating a WorkflowRunError didn't finish"
+    names, has_message, has_x, has_zero, as_dict = results[0]
+    assert names == ["code", "type", "message", "quickbooks_message", "hint"]
+    assert (has_message, has_x, has_zero) == (True, False, False)
+    assert as_dict == error.to_dict()
+    assert list(error.keys()) == names
 
 
 def test_a_workflow_run_error_is_frozen():
