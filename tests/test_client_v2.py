@@ -295,6 +295,33 @@ def test_workflow_types_raises_a_refusal(client, fake):
     assert info.value.status == 401
 
 
+def test_get_request_takes_a_link(client, fake):
+    client.get_request(fake.base_url + "/api/v2/connections/c1/queued-requests/q1")
+    assert (fake.last["method"], fake.last["path"]) == ("GET", "/api/v2/connections/c1/queued-requests/q1")
+    client.get_request(fake.base_url + "/api/v1/connections/c1/queued_requests/q1")
+    assert fake.last["path"] == "/api/v1/connections/c1/queued_requests/q1"
+    with pytest.raises(Exception, match="refusing"):
+        client.get_request("https://elsewhere.test/api/v2/connections/c1/queued-requests/q1")
+
+
+def test_response_xml_for_fetches_only_when_omitted(client, fake):
+    from qubesync import webhooks
+
+    inline = webhooks.parse({"page_request_id": "q1", "response_xml": "<QBXML/>"})
+    assert client.response_xml_for(inline) == "<QBXML/>"
+
+    link = fake.base_url + "/api/v2/connections/c1/queued-requests/q1"
+    omitted = webhooks.parse({"page_request_id": "q1", "response_xml": None,
+                              "response_xml_omitted": True, "links": {"self": link}})
+    fake.answer({"json": {"data": {"id": "q1", "response_xml": "<QBXML>big</QBXML>"}}})
+    assert client.response_xml_for(omitted) == "<QBXML>big</QBXML>"
+    assert fake.last["path"] == "/api/v2/connections/c1/queued-requests/q1"
+
+    no_link = webhooks.parse({"page_request_id": "q1", "response_xml_omitted": True})
+    with pytest.raises(ValueError, match="links.self"):
+        client.response_xml_for(no_link)
+
+
 def test_get_run_by_link_or_ids(client, fake):
     client.get_run(fake.base_url + "/api/v2/connections/c1/workflow-runs/r1?x=1")
     assert fake.last["path"] == "/api/v2/connections/c1/workflow-runs/r1"

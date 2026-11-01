@@ -214,7 +214,7 @@ Query strings follow the API: a list repeats its key (`ref_number=A&ref_number=B
 dict brackets its keys (`name_range[from]=A&name_range[to]=M`, a list inside it as
 `filter[list_id][]=a`), and booleans are `true`/`false`.
 
-The answer arrives at `webhook_url` (see [Webhooks](#webhooks)). Also `get_request(connection_id, id)`,
+The answer arrives at `webhook_url` (see [Webhooks](#webhooks)). Also `get_request(connection_id, id)` (or `get_request(link)`, such as a webhook's `links.self`),
 `request_pages(connection_id, id)`, `discard_request(connection_id, id)`,
 `list_requests(connection_id, page=None, page_size=None, state=None, ...)` (the whole body,
 `{"data": [...], "meta": {"page": ..., "total_pages": ...}}`), and `iter_requests(connection_id, ...)`,
@@ -333,12 +333,22 @@ def handle(raw_body, signature_header):
 
 | `type` | Event | Accessors | `dedupe_key` |
 | --- | --- | --- | --- |
-| `request` | no `event`, has `page_request_id` | `id`, `page_request_id`, `state`, `page`, `iteration_state`, `response_json`, `error` | `"<page_request_id>:<state>"` |
+| `request` | no `event`, has `page_request_id` | `id`, `page_request_id`, `state`, `page`, `iteration_state`, `response_json`, `response_xml`, `error`, `error_type`, `perhaps_applied`, `response_xml_omitted`, `links`, `self_link` | `"<page_request_id>:<state>"` |
 | `workflow_run` | `workflow_run.awaiting_input`, `.completed`, `.failed`, `.cancelled` | `run_id`, `reference`, `revision`, `run_state`, `workflow`, `connection_id`, `prompt`, `outcome`, `output`, `error`, `summary`, `cancel_reason`, `links`, `newer_than(rev)` | `None` |
 | `notification` | `workflow_run.notification` | `run_id`, `reference`, `revision`, `delivery_id`, `seq`, `name`, `state`, `from_`, `data` | `delivery_id` |
 | `connection` | `connection.*` | `delivery_id`, `revision`, `connection`, `connection_id`, `stall_reason`, `newer_than(rev)` | `delivery_id` |
 | `name_index` | `name_index.*` | `connection_id`, `name_index` | `None` |
 | `unknown` | anything else | `body`, `get(key)` | `None` |
+
+A request event is `perhaps_applied` when it `timed_out`, or ended in an `error` whose `error_type`
+is `outcome_unknown` (the Web Connector reported an error mid-write). QuickBooks may have saved it,
+so look before you send a create or an update again; a query is safe to resend. Other errors, such
+as a read's `unexpected_error`, are not.
+
+A request event whose body would be over 1 MB comes with `response_xml` `None`,
+`response_xml_omitted` true and `self_link` (its `links.self`). `response_json` always comes.
+`client.response_xml_for(event)` returns the event's `response_xml`, or fetches it from `self_link`
+when it was omitted; `client.get_request(event.self_link)` returns the whole request.
 
 `newer_than(stored_revision)` is true when nothing is stored yet (`None`) or the event's
 revision is higher.

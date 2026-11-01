@@ -537,9 +537,23 @@ class Client(OperationsMixin):
             headers={"Idempotency-Key": idempotency_key or str(uuid.uuid4())},
         )
 
-    def get_request(self, connection_id, id):
-        # type: (str, str) -> Any
-        return self._data("GET", "/connections/%s/queued-requests/%s" % (_seg(connection_id), _seg(id)))
+    def get_request(self, connection_id_or_link, id=None):
+        # type: (str, Optional[str]) -> Any
+        """``get_request(connection_id, id)`` or ``get_request(event.self_link)``."""
+        if id is None:
+            return self._data("GET", connection_id_or_link)
+        return self._data("GET", "/connections/%s/queued-requests/%s" % (_seg(connection_id_or_link), _seg(id)))
+
+    def response_xml_for(self, event):
+        # type: (Any) -> Optional[str]
+        """A request event's ``response_xml``, fetched from ``links.self`` when it was omitted."""
+        if not event.response_xml_omitted:
+            return event.response_xml
+        link = event.self_link
+        if not link:
+            raise ValueError("response_xml was omitted but the event has no links.self")
+        request = self.get_request(link)
+        return request.get("response_xml") if isinstance(request, dict) else None
 
     def request_pages(self, connection_id, id):
         # type: (str, str) -> Any

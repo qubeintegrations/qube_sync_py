@@ -322,8 +322,44 @@ class RequestEvent(Event):
         return self.body.get("response_json")
 
     @property
+    def response_xml(self):
+        # type: () -> Optional[str]
+        """None when `response_xml_omitted` (the body was over 1 MB)."""
+        return self.body.get("response_xml")
+
+    @property
     def error(self):
         return self.body.get("error")
+
+    @property
+    def error_type(self):
+        # type: () -> Optional[str]
+        """``error["error_type"]`` (``"timed_out"``, ``"outcome_unknown"``, ...); None without an error."""
+        error = self.error
+        return error.get("error_type") if isinstance(error, dict) else None
+
+    @property
+    def perhaps_applied(self):
+        # type: () -> bool
+        """True when QuickBooks may have applied it: timed out, or a write's ``outcome_unknown``. Look before resending."""
+        return self.state == "timed_out" or self.error_type in ("timed_out", "outcome_unknown")
+
+    @property
+    def response_xml_omitted(self):
+        # type: () -> bool
+        """True when `response_xml` was left out for size; fetch `self_link` for it."""
+        return self.body.get("response_xml_omitted") is True
+
+    @property
+    def links(self):
+        return self.body.get("links")
+
+    @property
+    def self_link(self):
+        # type: () -> Optional[str]
+        """``links["self"]``, the request's API URL, sent with an omitted `response_xml`."""
+        links = self.links
+        return links.get("self") if isinstance(links, dict) else None
 
     @property
     def dedupe_key(self):

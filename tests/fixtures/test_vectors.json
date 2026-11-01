@@ -370,6 +370,18 @@
       }
     },
     {
+      "name": "request: an answer too large to carry its qbXML",
+      "body": "{\"app_id\":\"0196a1c0-0000-7000-8000-00000000a001\",\"app_name\":\"Vector App\",\"error\":null,\"id\":\"0196a1c0-0000-7000-8000-00000000e001\",\"iteration_state\":\"not_applicable\",\"links\":{\"self\":\"https://qubesync.com/api/v2/connections/0196a1c0-0000-7000-8000-00000000c001/queued-requests/0196a1c0-0000-7000-8000-00000000e001\"},\"page\":1,\"page_request_id\":\"0196a1c0-0000-7000-8000-00000000e001\",\"response_json\":{\"data\":{\"edit_sequence\":\"1760999990\",\"email\":\"ap@northwind.example\",\"full_name\":\"Northwind Builders\",\"is_active\":true,\"list_id\":\"80000024-1760999990\",\"name\":\"Northwind Builders\",\"notes\":\"Naïve café — ünïcode, kept as UTF-8\"},\"status\":\"success\"},\"response_xml\":null,\"response_xml_omitted\":true,\"sandbox\":true,\"state\":\"response_received\",\"timestamp\":1761000000}",
+      "header": "t=1761000000,v1=8285388266b1d3f6320cfecb2f0c516e1fbf72c703da9f5f95a765be63e94af0",
+      "expect": {
+        "type": "request",
+        "event": null,
+        "dedupe_key": "0196a1c0-0000-7000-8000-00000000e001:response_received",
+        "revision": null,
+        "reference": null
+      }
+    },
+    {
       "name": "workflow_run.awaiting_input",
       "body": "{\"app_id\":\"0196a1c0-0000-7000-8000-00000000a001\",\"connection_id\":\"0196a1c0-0000-7000-8000-00000000c001\",\"event\":\"workflow_run.awaiting_input\",\"links\":{\"cancel\":\"https://qubesync.com/api/v2/connections/0196a1c0-0000-7000-8000-00000000c001/workflow-runs/0196a1c0-0000-7000-8000-00000000f001/cancel\",\"decisions\":\"https://qubesync.com/api/v2/connections/0196a1c0-0000-7000-8000-00000000c001/workflow-runs/0196a1c0-0000-7000-8000-00000000f001/decisions?prompt_token=Vq3kT9xRb2LmW8sZ\",\"run\":\"https://qubesync.com/api/v2/connections/0196a1c0-0000-7000-8000-00000000c001/workflow-runs/0196a1c0-0000-7000-8000-00000000f001\",\"search\":\"https://qubesync.com/api/v2/connections/0196a1c0-0000-7000-8000-00000000c001/workflow-runs/0196a1c0-0000-7000-8000-00000000f001/search?prompt_token=Vq3kT9xRb2LmW8sZ\",\"ui\":\"https://qubesync.com/app/workflow_runs/0196a1c0-0000-7000-8000-00000000f001\"},\"prompt\":{\"choices\":[{\"description\":null,\"detail\":\"similar name\",\"fields\":[],\"id\":\"use:1\",\"label\":\"Riverbend Electric\"},{\"description\":null,\"detail\":null,\"fields\":[{\"kind\":\"customer\",\"label\":\"The one to use\",\"name\":\"list_id\",\"required\":true,\"type\":\"record\"}],\"id\":\"use\",\"label\":\"Another one…\"},{\"description\":null,\"detail\":null,\"fields\":[],\"id\":\"none\",\"label\":\"None of these\"},{\"description\":null,\"detail\":null,\"fields\":[],\"id\":\"cancel\",\"label\":\"Cancel\"}],\"data\":{\"name\":\"Riverbend\"},\"details\":[{\"label\":\"Customer\",\"value\":\"Riverbend\"}],\"id\":\"resolve / ask\",\"kind\":\"decision\",\"message\":\"No record has exactly that name. Pick the one you meant, say none of these is it, or cancel.\",\"options\":[],\"token\":\"Vq3kT9xRb2LmW8sZ\"},\"reference\":\"contact-381-1\",\"revision\":6,\"run_id\":\"0196a1c0-0000-7000-8000-00000000f001\",\"run_state\":\"awaiting_input\",\"sandbox\":true,\"timestamp\":1761000000,\"workflow\":\"ensure_customer\",\"workflow_id\":\"0196a1c0-0000-7000-8000-00000000f0a1\"}",
       "header": "t=1761000000,v1=eeb96ce89f13e431e25e13289efabc8d5555edc9f2accf00e599365bd6d29860",
