@@ -479,9 +479,19 @@ class WorkflowRunError(object):
         """The five wire keys, as QuBe Sync sends them."""
         return dataclasses.asdict(self)
 
+    def __getitem__(self, key):
+        # type: (Any) -> Any
+        """A field by name, as the dict was read: ``error["message"]``. None for any other key."""
+        if isinstance(key, str) and key in _ERROR_FIELDS:
+            return getattr(self, key)
+        return None
+
     def __str__(self):
         # type: () -> str
         return "" if self.message is None else self.message
+
+
+_ERROR_FIELDS = ("code", "type", "message", "quickbooks_message", "hint")
 
 
 class NotificationEvent(Event):

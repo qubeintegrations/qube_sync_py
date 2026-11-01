@@ -316,6 +316,18 @@ def test_error_is_none_when_absent_or_neither_a_dict_nor_a_str():
     assert _failed(["a"]).error is None
 
 
+def test_a_workflow_run_error_reads_a_field_by_name():
+    error = _failed({"code": 3100, "type": "name_in_use", "message": "In use."}).error
+    assert error["message"] == "In use."
+    assert error["code"] == 3100
+    assert error["hint"] is None
+    assert error["anything"] is None
+    assert error["__class__"] is None
+    assert error[0] is None
+    assert error[None] is None
+    assert _failed("Riverbend failed").error["message"] == "Riverbend failed"
+
+
 def test_a_workflow_run_error_is_frozen():
     error = webhooks.WorkflowRunError(message="x")
     with pytest.raises(dataclasses.FrozenInstanceError):

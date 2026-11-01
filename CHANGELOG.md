@@ -18,7 +18,8 @@ concatenated it stops working; use `event.error.message` (or `str(event.error)`)
 - `WorkflowRunEvent.error` returns a `qubesync.webhooks.WorkflowRunError`, a frozen dataclass
   with `code`, `type`, `message`, `quickbooks_message` and `hint`, or None when there's none.
   QuBe Sync now sends `error` as an object; a str from an older server reads as one with only
-  `message`, without raising. `str(error)` is the message, `error.to_dict()` (and
+  `message`, without raising. `event.error["message"]` keeps working (a field by name; any
+  other key gives None). `str(error)` is the message, `error.to_dict()` (and
   `dataclasses.asdict(error)`) gives the five keys, and `event.get("error")` is the raw value.
   The integration kit still stores the raw value on its run row.
 
