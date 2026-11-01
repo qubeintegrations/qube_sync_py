@@ -465,7 +465,7 @@ class Operation(object):
         if self._ended(event):
             run.ended_at = run.ended_at or run._kit_store.now()
             if event.event == FAILED:
-                run.error = event.error
+                run.error = event.get("error")  # the raw value, stored as JSON
             if event.event == CANCELLED:
                 run.cancel_reason = event.cancel_reason
 

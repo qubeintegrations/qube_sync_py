@@ -5,16 +5,40 @@ All notable changes to the QubeSync Python library will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - Unreleased
+
+For QuBe Sync's new workflow webhook shape, and the request webhook additions below. One read
+changes: `WorkflowRunEvent.error` returns a `WorkflowRunError` instead of the body's raw value.
+It's a minor version because, before 1.0, a change to what a reader returns goes in the minor
+number. Code that compared it with a str (`event.error == "text"`), called str methods on it or
+concatenated it stops working; use `event.error.message` (or `str(event.error)`).
+
+### Changed
+
+- `WorkflowRunEvent.error` returns a `qubesync.webhooks.WorkflowRunError`, a frozen dataclass
+  with `code`, `type`, `message`, `quickbooks_message` and `hint`, or None when there's none.
+  QuBe Sync now sends `error` as an object; a str from an older server reads as one with only
+  `message`, without raising. `str(error)` is the message, `error.to_dict()` (and
+  `dataclasses.asdict(error)`) gives the five keys, and `event.get("error")` is the raw value.
+  The integration kit still stores the raw value on its run row.
 
 ### Added
 
+- `WorkflowRunEvent.headline` and `NotificationEvent.headline`: one plain sentence saying what
+  happened, for a person. Never parse it.
+- `WorkflowRunEvent.workflow_id`.
+- The vendored webhook test vectors are QuBe Sync's new ones: `error` an object, `headline` on
+  every workflow event, `summary.changes` in place of `summary.side_effects`, `links` only while
+  they work, and no `prompt.options`. The library passes `output`, `summary` and `prompt` through
+  as they come, so `push_records`' `pushed` / `pushed_with_errors` outcomes and their `items` and
+  `counts` need no change here; `output.outcome` is gone, so read `event.outcome`.
 - `RequestEvent.perhaps_applied`: true for a `timed_out` request and for an `error` with
   `error_type` `outcome_unknown`, QuBe Sync's type for a write the Web Connector reported an error
   on mid-request. QuickBooks may have applied either, so look before sending a write again.
   `RequestEvent.error_type` reads `error["error_type"]`.
 - A request webhook whose body would be over 1 MB comes with `response_xml` None,
-  `response_xml_omitted` true and `links.self`. `RequestEvent.response_xml`, `.response_xml_omitted`,
+  `response_xml_omitted` true and `links.self` (a `/api/v2/...` URL for a request queued with
+  the v2 API, `/api/v1/...` for a v1 one). `RequestEvent.response_xml`, `.response_xml_omitted`,
   `.links` and `.self_link` read them, and `Client.response_xml_for(event)` returns the event's
   `response_xml`, fetching it from `links.self` when it was omitted.
 - `Client.get_request(link)` takes a request's URL (such as `links.self`), as `get_run` does.

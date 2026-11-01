@@ -1,6 +1,7 @@
 """qubesync.webhooks against the server's test vectors (tests/fixtures/test_vectors.json,
 written by `mix webhook_vectors.gen` in qube; don't edit it by hand)."""
 import ast
+import dataclasses
 import datetime
 import json
 from pathlib import Path
@@ -238,6 +239,90 @@ def test_typed_accessors():
     assert ready.timestamp == T
 
 
+def test_every_workflow_run_event_and_notification_has_a_headline():
+    cases = [c for c in EVENTS if c["name"].startswith("workflow_run.")]
+    assert len(cases) == 5
+    for case in cases:
+        event = webhooks.parse(case["body"])
+        assert isinstance(event.headline, str), case["name"]
+        assert event.headline == json.loads(case["body"])["headline"], case["name"]
+    (notification,) = by_type("notification")
+    assert notification.headline == "pull_changes sent page."
+
+
+def test_headline_is_none_when_absent():
+    assert webhooks.parse({"event": "workflow_run.completed"}).headline is None
+    assert webhooks.parse({"event": "workflow_run.notification"}).headline is None
+
+
+def test_workflow_id():
+    for event in by_type("workflow_run"):
+        assert event.workflow_id == "0196a1c0-0000-7000-8000-00000000f0a1"
+    assert webhooks.parse({"event": "workflow_run.completed"}).workflow_id is None
+
+
+def _failed(error):
+    return webhooks.parse({"event": "workflow_run.failed", "error": error})
+
+
+def test_a_failed_runs_error_is_a_workflow_run_error():
+    failed = next(e for e in by_type("workflow_run") if e.event == "workflow_run.failed")
+    error = failed.error
+    assert isinstance(error, webhooks.WorkflowRunError)
+    assert error.message.startswith("Five renames were tried")
+    assert (error.code, error.type, error.quickbooks_message, error.hint) == (None, None, None, None)
+    assert error.to_dict() == failed.get("error")
+    assert str(error) == error.message
+    assert failed.body["error"] == failed.get("error")
+
+
+def test_error_reads_quickbooks_code_type_text_and_hint():
+    raw = {
+        "code": 3100,
+        "type": "name_in_use",
+        "message": "That name is already in use.",
+        "quickbooks_message": 'The name "Riverbend" of the list element is already in use.',
+        "hint": "Pick another name.",
+    }
+    error = _failed(raw).error
+    assert error == webhooks.WorkflowRunError(**raw)
+    assert (error.code, error.type, error.hint) == (3100, "name_in_use", "Pick another name.")
+    assert "already in use" in error.quickbooks_message
+    assert error.to_dict() == raw
+    assert list(error.to_dict()) == ["code", "type", "message", "quickbooks_message", "hint"]
+
+
+def test_error_serializes_with_every_field():
+    error = _failed({"code": 3100, "type": "name_in_use", "message": "In use.", "hint": "Rename it."}).error
+    wire = {"code": 3100, "type": "name_in_use", "message": "In use.", "quickbooks_message": None, "hint": "Rename it."}
+    assert json.loads(json.dumps(dataclasses.asdict(error))) == wire
+    assert json.loads(json.dumps(error.to_dict())) == wire
+    assert webhooks.WorkflowRunError(**json.loads(json.dumps(error.to_dict()))) == error
+
+
+def test_an_older_servers_str_error_reads_as_one_with_only_a_message():
+    error = _failed("Riverbend failed").error
+    assert error == webhooks.WorkflowRunError(message="Riverbend failed")
+    assert (error.code, error.type, error.quickbooks_message, error.hint) == (None, None, None, None)
+    assert str(error) == "Riverbend failed"
+    assert _failed("Riverbend failed").get("error") == "Riverbend failed"
+
+
+def test_error_is_none_when_absent_or_neither_a_dict_nor_a_str():
+    assert webhooks.parse({"event": "workflow_run.completed"}).error is None
+    assert _failed(None).error is None
+    assert _failed(42).error is None
+    assert _failed(42).get("error") == 42
+    assert _failed(["a"]).error is None
+
+
+def test_a_workflow_run_error_is_frozen():
+    error = webhooks.WorkflowRunError(message="x")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        error.message = "y"  # type: ignore[misc]
+    assert str(webhooks.WorkflowRunError()) == ""
+
+
 def test_parse_refuses_a_body_that_is_not_an_object():
     with pytest.raises(ValueError):
         webhooks.parse("[1, 2]")
@@ -258,7 +343,7 @@ def test_the_module_needs_only_the_standard_library():
             imported.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0:
             imported.add(node.module.split(".")[0])
-    assert imported <= {"datetime", "hashlib", "hmac", "json", "re", "time", "typing"}
+    assert imported <= {"dataclasses", "datetime", "hashlib", "hmac", "json", "re", "time", "typing"}
 
 
 def _request(state, error_type=None):
