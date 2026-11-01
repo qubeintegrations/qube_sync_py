@@ -299,10 +299,15 @@ def handle(raw_body, signature_header):
     if event.type == "request":
         # One page of a request's answer, in one state.
         save_page(event.page_request_id, event.page, event.response_json, event.error)
+        # event.perhaps_applied: QuickBooks may have saved a write that timed out or ended
+        # outcome_unknown, so look before sending it again.
+        # event.response_xml_omitted: over 1 MB; client.response_xml_for(event) fetches it.
     elif event.type == "workflow_run":
         run = find_run(event.reference)
         if event.newer_than(run.revision):  # older or equal revisions arrived late: skip them
             run.update(revision=event.revision, state=event.run_state, prompt=event.prompt)
+        # event.headline, event.outcome, event.output, event.summary["changes"], and on
+        # workflow_run.failed event.error.message
     elif event.type == "notification":
         # Data a running workflow sent out. Never skip it by revision; dedupe_key is delivery_id.
         store_records(event.reference, event.name, event.data)
@@ -334,8 +339,8 @@ def handle(raw_body, signature_header):
 | `type` | Event | Accessors | `dedupe_key` |
 | --- | --- | --- | --- |
 | `request` | no `event`, has `page_request_id` | `id`, `page_request_id`, `state`, `page`, `iteration_state`, `response_json`, `response_xml`, `error`, `error_type`, `perhaps_applied`, `response_xml_omitted`, `links`, `self_link` | `"<page_request_id>:<state>"` |
-| `workflow_run` | `workflow_run.awaiting_input`, `.completed`, `.failed`, `.cancelled` | `run_id`, `reference`, `revision`, `run_state`, `workflow`, `connection_id`, `prompt`, `outcome`, `output`, `error`, `summary`, `cancel_reason`, `links`, `newer_than(rev)` | `None` |
-| `notification` | `workflow_run.notification` | `run_id`, `reference`, `revision`, `delivery_id`, `seq`, `name`, `state`, `from_`, `data` | `delivery_id` |
+| `workflow_run` | `workflow_run.awaiting_input`, `.completed`, `.failed`, `.cancelled` | `run_id`, `reference`, `revision`, `run_state`, `workflow`, `workflow_id`, `connection_id`, `headline`, `prompt`, `outcome`, `output`, `error`, `summary`, `cancel_reason`, `links`, `newer_than(rev)` | `None` |
+| `notification` | `workflow_run.notification` | `run_id`, `reference`, `revision`, `delivery_id`, `seq`, `name`, `state`, `from_`, `data`, `headline` | `delivery_id` |
 | `connection` | `connection.*` | `delivery_id`, `revision`, `connection`, `connection_id`, `stall_reason`, `newer_than(rev)` | `delivery_id` |
 | `name_index` | `name_index.*` | `connection_id`, `name_index` | `None` |
 | `unknown` | anything else | `body`, `get(key)` | `None` |
@@ -348,7 +353,28 @@ as a read's `unexpected_error`, are not.
 A request event whose body would be over 1 MB comes with `response_xml` `None`,
 `response_xml_omitted` true and `self_link` (its `links.self`). `response_json` always comes.
 `client.response_xml_for(event)` returns the event's `response_xml`, or fetches it from `self_link`
-when it was omitted; `client.get_request(event.self_link)` returns the whole request.
+when it was omitted; `client.get_request(event.self_link)` returns the whole request. `self_link`
+points at the API the request was queued through: a `/api/v2/...` URL for a request queued with
+the v2 API, a `/api/v1/...` one for a v1 request.
+
+Workflow run and notification events have `headline`, one plain sentence for a person (a log line,
+a status on your page). Never parse it: branch on `event`, `outcome`, `output` and `error`.
+
+A failed run's `error` is a `webhooks.WorkflowRunError`, a frozen dataclass with `code`
+(QuickBooks' status code, such as 3100), `type` (a stable name to branch on, such as
+`name_in_use`), `message` (safe to show), `quickbooks_message` and `hint`; all but `message` may
+be `None`. `str(error)` is the message, `error["message"]` reads a field by name as the dict
+did (any other key gives `None`), iterating gives the field names, like the dict did (so
+`"hint" in error` and `dict(error)` work), and `error.to_dict()` (or `dataclasses.asdict(error)`)
+gives the five keys, for storing it as JSON. An error from an older server, a str, reads as one
+with only `message`; `event.get("error")` is the raw value. `error` is `None` when there's none.
+
+Each outcome has its own `output`, with only the keys that ending sets; read the ending from
+`event.outcome` (`output` has no `outcome`). `push_records` ends `pushed` or `pushed_with_errors`,
+with `output["items"]` (one per record, a failed one with its own `error` object, a dict) and
+`output["counts"]`. `summary["changes"]` lists what the run changed in QuickBooks. `links` holds
+only the links that work: `decisions` and `search` only while the run is `awaiting_input`,
+`cancel` until it ends. The library passes `output`, `summary` and `prompt` through as they came.
 
 `newer_than(stored_revision)` is true when nothing is stored yet (`None`) or the event's
 revision is higher.

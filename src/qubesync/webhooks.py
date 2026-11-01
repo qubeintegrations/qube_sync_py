@@ -17,13 +17,14 @@ Framework-free and standard library only::
 then parses the body. `parse` builds the event without checking anything.
 """
 
+import dataclasses
 import datetime
 import hashlib
 import hmac
 import json
 import re
 import time
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from .errors import QubeSyncError
 
@@ -34,6 +35,7 @@ __all__ = [
     "Event",
     "RequestEvent",
     "WorkflowRunEvent",
+    "WorkflowRunError",
     "NotificationEvent",
     "ConnectionEvent",
     "NameIndexEvent",
@@ -400,8 +402,19 @@ class WorkflowRunEvent(_Revisioned):
         return self.body.get("workflow")
 
     @property
+    def workflow_id(self):
+        # type: () -> Optional[str]
+        return self.body.get("workflow_id")
+
+    @property
     def connection_id(self):
         return self.body.get("connection_id")
+
+    @property
+    def headline(self):
+        # type: () -> Optional[str]
+        """One plain sentence saying what happened, for a person. Never parse it."""
+        return self.body.get("headline")
 
     @property
     def prompt(self):
@@ -417,7 +430,10 @@ class WorkflowRunEvent(_Revisioned):
 
     @property
     def error(self):
-        return self.body.get("error")
+        # type: () -> Optional[WorkflowRunError]
+        """What failed the run, or None. An older server's str reads as one with only ``message``;
+        ``get("error")`` is the raw value."""
+        return WorkflowRunError.from_value(self.body.get("error"))
 
     @property
     def summary(self):
@@ -430,6 +446,66 @@ class WorkflowRunEvent(_Revisioned):
     @property
     def links(self):
         return self.body.get("links")
+
+
+@dataclasses.dataclass(frozen=True)
+class WorkflowRunError(object):
+    """What failed a workflow run. All but ``message`` may be None; ``str(error)`` is the message."""
+
+    code: Optional[int] = None  # QuickBooks' status code, such as 3100
+    type: Optional[str] = None  # a stable name to branch on, such as "name_in_use"
+    message: Optional[str] = None  # one plain sentence, safe to show
+    quickbooks_message: Optional[str] = None
+    hint: Optional[str] = None
+
+    @classmethod
+    def from_value(cls, value):
+        # type: (Any) -> Optional[WorkflowRunError]
+        """From the body's ``error``: a dict, or an older server's str. None for anything else."""
+        if isinstance(value, dict):
+            return cls(
+                code=value.get("code"),
+                type=value.get("type"),
+                message=value.get("message"),
+                quickbooks_message=value.get("quickbooks_message"),
+                hint=value.get("hint"),
+            )
+        if isinstance(value, str):
+            return cls(message=value)
+        return None
+
+    def to_dict(self):
+        # type: () -> Dict[str, Any]
+        """The five wire keys, as QuBe Sync sends them."""
+        return dataclasses.asdict(self)
+
+    def __getitem__(self, key):
+        # type: (Any) -> Any
+        """A field by name, as the dict was read: ``error["message"]``. None for any other key."""
+        if isinstance(key, str) and key in _ERROR_FIELDS:
+            return getattr(self, key)
+        return None
+
+    def __iter__(self):
+        # type: () -> Iterator[str]
+        """The five field names, in wire order, as iterating the dict gave."""
+        return iter(_ERROR_FIELDS)
+
+    def __contains__(self, key):
+        # type: (Any) -> bool
+        return isinstance(key, str) and key in _ERROR_FIELDS
+
+    def keys(self):
+        # type: () -> Tuple[str, ...]
+        """The five field names, so ``dict(error)`` works."""
+        return _ERROR_FIELDS
+
+    def __str__(self):
+        # type: () -> str
+        return "" if self.message is None else self.message
+
+
+_ERROR_FIELDS = ("code", "type", "message", "quickbooks_message", "hint")
 
 
 class NotificationEvent(Event):
@@ -478,6 +554,12 @@ class NotificationEvent(Event):
     @property
     def data(self):
         return self.body.get("data")
+
+    @property
+    def headline(self):
+        # type: () -> Optional[str]
+        """One plain sentence saying what happened, for a person. Never parse it."""
+        return self.body.get("headline")
 
     @property
     def dedupe_key(self):
