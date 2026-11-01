@@ -22,6 +22,12 @@ concatenated it stops working; use `event.error.message` (or `str(event.error)`)
   other key gives None). `str(error)` is the message, `error.to_dict()` (and
   `dataclasses.asdict(error)`) gives the five keys, and `event.get("error")` is the raw value.
   The integration kit still stores the raw value on its run row.
+- The integration kit hands a request QuickBooks may have applied to `Request.timed_out(event)`,
+  not `failed(event)`: routing follows `event.perhaps_applied`, so an `error` whose `error_type`
+  is `outcome_unknown` or `response_too_large` goes there as a `timed_out` does. Check
+  QuickBooks before sending a write again; a query can be queued again (page a too-large one).
+  `failed` never gets one of those. The hook keeps its name, and its default still calls
+  `failed`.
 
 ### Added
 
@@ -34,8 +40,11 @@ concatenated it stops working; use `event.error.message` (or `str(event.error)`)
   as they come, so `push_records`' `pushed` / `pushed_with_errors` outcomes and their `items` and
   `counts` need no change here; `output.outcome` is gone, so read `event.outcome`.
 - `RequestEvent.perhaps_applied`: true for a `timed_out` request and for an `error` with
-  `error_type` `outcome_unknown`, QuBe Sync's type for a write the Web Connector reported an error
-  on mid-request. QuickBooks may have applied either, so look before sending a write again.
+  `error_type` `outcome_unknown` (QuBe Sync's type for a write the Web Connector reported an
+  error on mid-request) or `response_too_large` (QuickBooks ran it, but its answer was too big
+  to keep), as listed in `RequestEvent.PERHAPS_APPLIED_ERROR_TYPES`. QuickBooks may have applied
+  any of them, so look before sending a write again. A query is safe to resend; page a
+  `response_too_large` one (`iterator`, a smaller `max_returned`) or narrow it.
   `RequestEvent.error_type` reads `error["error_type"]`.
 - A request webhook whose body would be over 1 MB comes with `response_xml` None,
   `response_xml_omitted` true and `links.self` (a `/api/v2/...` URL for a request queued with

@@ -384,14 +384,19 @@ def _request(state, error_type=None):
     return webhooks.parse(body)
 
 
-def test_perhaps_applied_for_timed_out_and_outcome_unknown():
+def test_perhaps_applied_for_timed_out_and_an_outcome_unknown_or_response_too_large_error():
     assert _request("timed_out", "timed_out").perhaps_applied
     assert _request("timed_out").perhaps_applied
     assert _request("error", "outcome_unknown").perhaps_applied
     assert _request("error", "outcome_unknown").error_type == "outcome_unknown"
+    assert _request("error", "response_too_large").perhaps_applied
 
 
 def test_perhaps_applied_is_false_for_other_errors_and_answers():
+    assert not _request("error", "quickbooks_business_error").perhaps_applied
+    assert not _request("error", "xml_error").perhaps_applied
+    assert not _request("discarded", "discarded").perhaps_applied
+    assert not _request("discarded").perhaps_applied
     assert not _request("error", "unexpected_error").perhaps_applied
     assert not _request("retryable", "retryable").perhaps_applied
     assert not _request("response_received").perhaps_applied

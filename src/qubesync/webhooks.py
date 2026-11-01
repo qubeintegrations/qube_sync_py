@@ -299,6 +299,9 @@ class RequestEvent(Event):
 
     type = "request"
 
+    # Endings QuickBooks may have applied though no answer says so.
+    PERHAPS_APPLIED_ERROR_TYPES = ("timed_out", "outcome_unknown", "response_too_large")
+
     @property
     def id(self):
         return self.body.get("id")
@@ -343,8 +346,11 @@ class RequestEvent(Event):
     @property
     def perhaps_applied(self):
         # type: () -> bool
-        """True when QuickBooks may have applied it: timed out, or a write's ``outcome_unknown``. Look before resending."""
-        return self.state == "timed_out" or self.error_type in ("timed_out", "outcome_unknown")
+        """True when QuickBooks may have applied it (``timed_out``, ``outcome_unknown``,
+        ``response_too_large``). Look in QuickBooks before sending a write again; a query is safe
+        to resend, and a ``response_too_large`` one should be paged (``iterator``, smaller
+        ``max_returned``) or narrowed."""
+        return self.state == "timed_out" or self.error_type in self.PERHAPS_APPLIED_ERROR_TYPES
 
     @property
     def response_xml_omitted(self):
